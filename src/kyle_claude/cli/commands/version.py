@@ -1,0 +1,6 @@
+import kyle_claude
+
+
+# 打印当前 kyle_claude 包的版本号
+def cmd_version() -> None:
+    print(kyle_claude.__version__)

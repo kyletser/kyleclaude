@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Generate WIRE_PROTOCOL.md from pydantic models in kyle_claude.core.bus."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from kyle_claude.core.bus.commands import (
+    AgentRunCommand,
+    AgentRunResult,
+    CoreAuthenticateCommand,
+    CoreAuthenticateResult,
+    EventSubscribeCommand,
+    EventSubscribeResult,
+    PermissionRespondCommand,
+    PermissionRespondResult,
+    PingCommand,
+    PongResult,
+    RunCancelCommand,
+    RunCancelResult,
+    SessionCloseCommand,
+    SessionCloseResult,
+    SessionCompactCommand,
+    SessionCompactResult,
+    SessionCreateCommand,
+    SessionCreateResult,
+    SessionDeleteCommand,
+    SessionDeleteResult,
+    SessionExportCommand,
+    SessionExportResult,
+    SessionForkCommand,
+    SessionForkResult,
+    SessionGetHistoryCommand,
+    SessionGetHistoryResult,
+    SessionListCommand,
+    SessionListResult,
+    SessionRenameCommand,
+    SessionRenameResult,
+    SessionResumeCommand,
+    SessionResumeResult,
+    SessionSendMessageCommand,
+    SessionSendMessageResult,
+)
+from kyle_claude.core.bus.envelope import EventPushEnvelope
+from kyle_claude.core.bus.events import (
+    CoreStartedEvent,
+    LlmModelSelectedEvent,
+    LlmTokenEvent,
+    LlmUsageEvent,
+    LogLineEvent,
+    RunFinishedEvent,
+    RunStartedEvent,
+    SessionClosedEvent,
+    SessionCreatedEvent,
+    SessionDeletedEvent,
+    SessionForkedEvent,
+    SessionMessageReceivedEvent,
+    SessionRenamedEvent,
+    SessionResumedEvent,
+    SessionWaitingForInputEvent,
+    StepFinishedEvent,
+    StepStartedEvent,
+    ToolCallFailedEvent,
+    ToolCallFinishedEvent,
+    ToolCallStartedEvent,
+)
+
+_OUTPUT_PATH = Path(__file__).parent.parent / "WIRE_PROTOCOL.md"
+
+
+# 从 pydantic 模型生成一个带字段表、JSON Schema 和可选示例的 Markdown 小节
+def _model_section(name: str, model: type, example: dict | None = None) -> str:  # type: ignore[type-arg]
+    schema = model.model_json_schema()  # type: ignore[attr-defined]
+    props = schema.get("properties", {})
+    required: set[str] = set(schema.get("required", []))
+
+    table = ""
+    if props:
+        table = "\n| Field | Type | Required |\n|---|---|---|\n"
+        for field_name, field_info in props.items():
+            ftype = field_info.get("type", "object")
+            if "anyOf" in field_info:
+                ftype = " | ".join(t.get("type", "?") for t in field_info["anyOf"])
+            req = "yes" if field_name in required else "no"
+            table += f"| `{field_name}` | `{ftype}` | {req} |\n"
+
+    schema_block = f"\n```json\n{json.dumps(schema, indent=2)}\n```\n"
+
+    example_block = ""
+    if example:
+        example_block = f"\n**Example:**\n\n```json\n{json.dumps(example, indent=2)}\n```\n"
+
+    return f"### {name}\n{table}{schema_block}{example_block}"
+
+
+# 生成完整的 WIRE_PROTOCOL.md 文档字符串
+def generate() -> str:
+    run_id = "20260516-100000-abc123"
+    ts = "2026-05-16T10:00:00.001Z"
+
+    ping_req_example = {
+        "jsonrpc": "2.0",
+        "id": "u-1",
+        "method": "core.ping",
+        "params": {"client": "cli/0.0.1"},
+    }
+    authenticate_req_example = {
+        "jsonrpc": "2.0",
+        "id": "auth-1",
+        "method": "core.authenticate",
+        "params": {"token": "<local-random-token>"},
+    }
+    authenticate_resp_example = {
+        "jsonrpc": "2.0",
+        "id": "auth-1",
+        "result": {"authenticated": True},
+    }
+    pong_resp_example = {
+        "jsonrpc": "2.0",
+        "id": "u-1",
+        "result": {
+            "server_version": "0.2.0",
+            "uptime_ms": 12,
+            "received_at": ts,
+        },
+    }
+    agent_run_req_example = {
+        "jsonrpc": "2.0",
+        "id": "u-2",
+        "method": "agent.run",
+        "params": {"goal": "总结 README.md 的主要章节"},
+    }
+    agent_run_resp_example = {
+        "jsonrpc": "2.0",
+        "id": "u-2",
+        "result": {"run_id": run_id},
+    }
+    subscribe_req_example = {
+        "jsonrpc": "2.0",
+        "id": "u-3",
+        "method": "event.subscribe",
+        "params": {
+            "topics": ["run.*", "step.*", "tool.*", "llm.token"],
+            "scope": "global",
+            "replay_from_run": None,
+        },
+    }
+    subscribe_resp_example = {
+        "jsonrpc": "2.0",
+        "id": "u-3",
+        "result": {"subscription_id": "sub-abc123", "replayed_count": 0},
+    }
+    session_id = "sess-abc123def456"
+    session_create_req_example = {
+        "jsonrpc": "2.0",
+        "id": "u-4",
+        "method": "session.create",
+        "params": {"mode": "chat", "title": ""},
+    }
+    session_create_resp_example = {
+        "jsonrpc": "2.0",
+        "id": "u-4",
+        "result": {"session_id": session_id, "status": "active"},
+    }
+    session_send_req_example = {
+        "jsonrpc": "2.0",
+        "id": "u-5",
+        "method": "session.send_message",
+        "params": {"session_id": session_id, "content": "总结 README.md"},
+    }
+    session_send_resp_example = {
+        "jsonrpc": "2.0",
+        "id": "u-5",
+        "result": {"run_id": run_id},
+    }
+    event_push_example = {
+        "kind": "event",
+        "event": {
+            "type": "step.started",
+            "run_id": run_id,
+            "step": 1,
+            "ts": ts,
+        },
+    }
+
+    sections = [
+        "# Wire Protocol\n\n",
+        "> Generated by `scripts/gen_protocol_doc.py`. **Do not edit manually.**\n\n",
+        "## Transport\n\n",
+        "- TCP loopback `127.0.0.1:7437`; `KYLE_HOST` may only select a loopback address\n",
+        "- Each message is one `\\n`-terminated JSON line (NDJSON)\n",
+        "- Commands use JSON-RPC 2.0 (client → server); Events use `kind=event` envelope (server → client)\n",
+        "- The first frame must be `core.authenticate`; failure closes the connection\n",
+        "- Core reads `KYLE_IPC_TOKEN` or creates the private `~/.kyle/ipc-token` file\n",
+        "- Authentication frames and token values are excluded from Trace\n\n",
+        "## Connection Authentication\n\n",
+        "Authentication completes synchronously before normal command dispatch, so pipelined business "
+        "frames cannot race the handshake. Clients must never log or persist the token in project files.\n\n",
+        _model_section(
+            "CoreAuthenticateCommand",
+            CoreAuthenticateCommand,
+            authenticate_req_example,
+        ),
+        "\n",
+        _model_section(
+            "CoreAuthenticateResult",
+            CoreAuthenticateResult,
+            authenticate_resp_example,
+        ),
+        "\n",
+        "## Commands\n\n",
+        "All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects the handler; "
+        "the model `type` field is the typed protocol discriminator.\n\n",
+        _model_section("PingCommand", PingCommand, ping_req_example),
+        "\n",
+        _model_section("PongResult", PongResult, pong_resp_example),
+        "\n",
+        _model_section("AgentRunCommand", AgentRunCommand, agent_run_req_example),
+        "\n",
+        _model_section("AgentRunResult", AgentRunResult, agent_run_resp_example),
+        "\n",
+        _model_section("RunCancelCommand", RunCancelCommand),
+        "\n",
+        _model_section("RunCancelResult", RunCancelResult),
+        "\n",
+        _model_section("EventSubscribeCommand", EventSubscribeCommand, subscribe_req_example),
+        "\n",
+        _model_section("EventSubscribeResult", EventSubscribeResult, subscribe_resp_example),
+        "\n",
+        _model_section("SessionCreateCommand", SessionCreateCommand, session_create_req_example),
+        "\n",
+        _model_section("SessionCreateResult", SessionCreateResult, session_create_resp_example),
+        "\n",
+        _model_section("SessionSendMessageCommand", SessionSendMessageCommand, session_send_req_example),
+        "\n",
+        _model_section("SessionSendMessageResult", SessionSendMessageResult, session_send_resp_example),
+        "\n",
+        _model_section("SessionGetHistoryCommand", SessionGetHistoryCommand),
+        "\n",
+        _model_section("SessionGetHistoryResult", SessionGetHistoryResult),
+        "\n",
+        _model_section("SessionListCommand", SessionListCommand),
+        "\n",
+        _model_section("SessionListResult", SessionListResult),
+        "\n",
+        _model_section("SessionResumeCommand", SessionResumeCommand),
+        "\n",
+        _model_section("SessionResumeResult", SessionResumeResult),
+        "\n",
+        _model_section("SessionRenameCommand", SessionRenameCommand),
+        "\n",
+        _model_section("SessionRenameResult", SessionRenameResult),
+        "\n",
+        _model_section("SessionForkCommand", SessionForkCommand),
+        "\n",
+        _model_section("SessionForkResult", SessionForkResult),
+        "\n",
+        _model_section("SessionExportCommand", SessionExportCommand),
+        "\n",
+        _model_section("SessionExportResult", SessionExportResult),
+        "\n",
+        _model_section("SessionDeleteCommand", SessionDeleteCommand),
+        "\n",
+        _model_section("SessionDeleteResult", SessionDeleteResult),
+        "\n",
+        _model_section("SessionCloseCommand", SessionCloseCommand),
+        "\n",
+        _model_section("SessionCloseResult", SessionCloseResult),
+        "\n",
+        _model_section("PermissionRespondCommand", PermissionRespondCommand),
+        "\n",
+        _model_section("PermissionRespondResult", PermissionRespondResult),
+        "\n",
+        _model_section("SessionCompactCommand", SessionCompactCommand),
+        "\n",
+        _model_section("SessionCompactResult", SessionCompactResult),
+        "\n## Server Push\n\n",
+        "Events pushed from daemon to subscribed clients over the same TCP connection.\n\n",
+        _model_section("EventPushEnvelope", EventPushEnvelope, event_push_example),
+        "\n## IPC Events\n\n",
+        "Events sent over the IPC socket (daemon → client).\n\n",
+        _model_section("CoreStartedEvent", CoreStartedEvent),
+        "\n## Run Events\n\n",
+        "Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscribed clients.\n\n",
+        _model_section("RunStartedEvent", RunStartedEvent,
+            {"type": "run.started", "run_id": run_id, "goal": "总结 README.md", "ts": ts}),
+        "\n",
+        _model_section("RunFinishedEvent", RunFinishedEvent, {
+            "type": "run.finished", "run_id": run_id,
+            "status": "success", "reason": None, "steps": 2, "ts": ts}),
+        "\n",
+        _model_section("StepStartedEvent", StepStartedEvent,
+            {"type": "step.started", "run_id": run_id, "step": 1, "ts": ts}),
+        "\n",
+        _model_section("StepFinishedEvent", StepFinishedEvent,
+            {"type": "step.finished", "run_id": run_id, "step": 1, "ts": ts}),
+        "\n",
+        _model_section("ToolCallStartedEvent", ToolCallStartedEvent,
+            {"type": "tool.call_started", "run_id": run_id, "tool_use_id": "toolu_01",
+             "tool_name": "read_file", "params": {"path": "README.md"}, "ts": ts}),
+        "\n",
+        _model_section("ToolCallFinishedEvent", ToolCallFinishedEvent,
+            {"type": "tool.call_finished", "run_id": run_id, "tool_use_id": "toolu_01",
+             "tool_name": "read_file", "elapsed_ms": 3, "ts": ts}),
+        "\n",
+        _model_section("ToolCallFailedEvent", ToolCallFailedEvent,
+            {"type": "tool.call_failed", "run_id": run_id, "tool_use_id": "toolu_02",
+             "tool_name": "read_file", "error_class": "runtime_error",
+             "error_message": "file not found", "elapsed_ms": 1, "attempt": 1, "ts": ts}),
+        "\n",
+        _model_section("LlmModelSelectedEvent", LlmModelSelectedEvent,
+            {"type": "llm.model_selected", "run_id": run_id,
+             "model": "claude-sonnet-4-6", "strategy": "static", "ts": ts}),
+        "\n",
+        _model_section("LlmTokenEvent", LlmTokenEvent,
+            {"type": "llm.token", "run_id": run_id, "token": "The ", "ts": ts}),
+        "\n",
+        _model_section("LlmUsageEvent", LlmUsageEvent,
+            {"type": "llm.usage", "run_id": run_id, "input_tokens": 512, "output_tokens": 48,
+             "cache_read_input_tokens": 490, "cache_creation_input_tokens": 0, "ts": ts}),
+        "\n",
+        _model_section("LogLineEvent", LogLineEvent,
+            {"type": "log.line", "run_id": run_id, "level": "INFO",
+             "source": "kyle_claude.core.loop", "message": "step 1 started", "ts": ts}),
+        "\n## Session Events\n\n",
+        _model_section("SessionCreatedEvent", SessionCreatedEvent,
+            {"type": "session.created", "session_id": session_id, "mode": "chat", "ts": ts}),
+        "\n",
+        _model_section("SessionMessageReceivedEvent", SessionMessageReceivedEvent,
+            {"type": "session.message_received", "session_id": session_id,
+             "content": "总结 README.md", "ts": ts}),
+        "\n",
+        _model_section("SessionWaitingForInputEvent", SessionWaitingForInputEvent,
+            {"type": "session.waiting_for_input", "session_id": session_id,
+             "last_run_id": run_id, "ts": ts}),
+        "\n",
+        _model_section("SessionResumedEvent", SessionResumedEvent,
+            {"type": "session.resumed", "session_id": session_id, "ts": ts}),
+        "\n",
+        _model_section("SessionRenamedEvent", SessionRenamedEvent),
+        "\n",
+        _model_section("SessionForkedEvent", SessionForkedEvent),
+        "\n",
+        _model_section("SessionDeletedEvent", SessionDeletedEvent),
+        "\n",
+        _model_section("SessionClosedEvent", SessionClosedEvent,
+            {"type": "session.closed", "session_id": session_id, "ts": ts}),
+        "\n## Error Codes\n\n",
+        "| Code | Name | Meaning |\n",
+        "|------|------|---------|\n",
+        "| -32700 | Parse Error | Invalid JSON received |\n",
+        "| -32600 | Invalid Request | Missing required JSON-RPC fields |\n",
+        "| -32601 | Method Not Found | Unknown method |\n",
+        "| -32602 | Invalid Params | Parameter validation failed |\n",
+        "| -32603 | Internal Error | Handler raised an unhandled exception |\n",
+        "| -32001 | Authentication Required | First frame was not authentication |\n",
+        "| -32002 | Authentication Failed | Credential was malformed or incorrect |\n",
+        "| -32010 | Session Not Found | Requested session does not exist |\n",
+        "| -32011 | Session Closed | Session cannot accept a message |\n",
+        "| -32012 | Session Busy | Session already has an active run |\n",
+        "| -32013 | Session Not Resumable | Session mode cannot be resumed |\n",
+        "| -32014 | Run Not Active | Run cannot be cancelled |\n",
+    ]
+    return "".join(sections)
+
+
+# 解析命令行参数，写出或校验 WIRE_PROTOCOL.md
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate WIRE_PROTOCOL.md")
+    parser.add_argument("--check", action="store_true", help="Verify file matches generated output")
+    parser.add_argument("--output", default=str(_OUTPUT_PATH))
+    args = parser.parse_args()
+
+    content = generate()
+
+    if args.check:
+        output_path = Path(args.output)
+        if not output_path.exists():
+            print(f"ERROR: {output_path} not found — run: make docs", file=sys.stderr)
+            sys.exit(1)
+        if output_path.read_text() != content:
+            print(f"ERROR: {output_path} out of sync with code — run: make docs", file=sys.stderr)
+            sys.exit(1)
+        print(f"OK: {output_path} is up to date.")
+    else:
+        output_path = Path(args.output)
+        output_path.write_text(content)
+        print(f"Generated {output_path}")
+
+
+if __name__ == "__main__":
+    main()
