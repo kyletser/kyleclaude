@@ -1,280 +1,263 @@
 # KyleClaude
 
-**KyleClaude：从零实现一个本地 Claude Code Agent 系统（mini 版）。**
+KyleClaude 是一个使用 Python 3.12 构建的本地 AI 编程 Agent 运行时。它采用 `kyle-core` 常驻守护进程与 CLI/TUI 客户端分离的双进程架构，在一条可观测、可恢复、受权限约束的执行链路中完成模型调用、工具执行、会话持久化、上下文压缩和多 Agent 协作。
 
-也可以理解为：我们自己动手实现一个 **minClaude**，不仅实现Agent内核，还是先一套 TUI。
+它不是一次性调用大模型的聊天 Demo。项目重点是 Coding Agent 背后的工程系统：类型化协议、异步运行时、工具安全、上下文治理、任务隔离和故障恢复。
 
-大家可以看一下效果：（接入的是deepseek-v4-flash，当然大家也可以接入其他模型）。
+![KyleClaude TUI](docs/images/2026-06-10_14-30-58.jpg)
 
-![](docs/images/2026-06-09_19-36-12.jpg)
+## 核心架构
 
-可以接入命令，可以使用skill，可控制上下文，可压缩：
+```mermaid
+flowchart LR
+    CLI["kyle CLI"] -->|"JSON-RPC 2.0 / NDJSON"| Core["kyle-core daemon"]
+    TUI["kyle-tui"] -->|"JSON-RPC 2.0 / NDJSON"| Core
+    Core --> Runner["AgentRunner"]
+    Runner --> Loop["Async AgentLoop"]
+    Loop --> LLM["Anthropic / OpenAI-compatible LLM"]
+    Loop --> Tools["Typed ToolRegistry"]
+    Tools --> Permission["PermissionManager"]
+    Loop --> Events["EventBus"]
+    Events --> TUI
+    Runner --> Session["Session / Transcript / Memory"]
+    Runner --> Compact["Context Compaction V2"]
+    Runner --> Agents["Subagents / Tasks / Worktrees"]
+```
 
-![](docs/images/2026-06-10_09-38-25.jpg)
+Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 TUI 只是客户端。前端退出不会改变协议边界，后续也可以在相同 IPC 之上增加 Web 或 IDE 客户端。
 
-可以下达一个稍稍负责的任务，KyleClaude自动完成规划 并执行：
+## 主要能力
 
-（KyleClaude会先申请一下本地编辑权限）
+| 领域 | 当前实现 |
+|---|---|
+| Agent Loop | 异步 Plan-Act-Observe 循环、流式 token、工具结果回填、限流退避与上下文溢出恢复 |
+| 类型化协议 | Pydantic v2 命令/事件模型、JSON-RPC 2.0、NDJSON 流、自动生成协议文档 |
+| 本地安全 | loopback 限制、首帧 token 认证、工作区边界、参数校验、交互审批与 headless 权限模式 |
+| 代码工具 | Read、Glob、Grep、Edit、Write、Apply Patch、Git Diff、Bash、Checkpoint/Rewind |
+| 会话系统 | 多轮 thread、block 级 transcript、崩溃尾部恢复、会话恢复/分叉/导出/删除 |
+| 长期记忆 | 项目级 JSON 记录、Markdown 索引、来源追踪、敏感信息脱敏和中英文词法召回 |
+| 上下文治理 | 80% 自动压缩、最近窗口保留、结构化摘要、质量门禁、工具输出分级和增量压缩 |
+| 多 Agent | 子 Agent、任务创建/认领、后台任务、Git worktree 隔离和独立工作区边界 |
+| 扩展机制 | Skills、MCP 工具接入、UserPromptSubmit/PreToolUse/PostToolUse/Stop 异步 Hooks |
+| 可观测性 | TUI 实时事件、token 水位、工具与审批状态、压缩指标、events.jsonl 和脱敏 Trace |
 
-![](docs/images/2026-06-10_09-41-25.jpg)
+## 快速开始
 
-然后规划并执行：
+### 环境要求
 
-![](docs/images/2026-06-10_09-42-43.jpg)
+- Python `3.12`
+- [uv](https://docs.astral.sh/uv/)
+- Git
 
-当然，它不是要一比一复刻 Claude Code 的所有产品能力，而是把 Claude Code 这类 AI 编程 Agent 最核心的运行机制拆出来：
-
-* 用户输入一个目标，Agent 能自己规划下一步
-* 模型不是只回答文本，而是能主动发起工具调用
-* 工具调用不是直接裸跑，而是有参数校验和权限审批
-* 代码发现使用结构化 Glob/Grep，遵守工作区边界和 ignore 规则，并限制结果规模
-* 代码修改使用 read hash 和精确 Edit，检测并发变化后通过原子替换落盘
-* 多文件修改使用 unified diff 全量预检和事务提交，失败时回滚已提交文件
-* 变更自检使用只读 Git Diff，结构化展示状态、增删统计和有界补丁
-* 每次文件修改自动生成 checkpoint，rewind 前检测用户后续修改并事务恢复
-* 运行可通过 CLI/TUI 主动取消，并清理 Bash 进程树、权限等待和派生 Subagent
-* assistant/tool_result 按 block 即时持久化，崩溃后归档不完整尾部并恢复合法会话边界
-* Trace 默认只记录元数据，统一脱敏后按大小轮转并限制历史文件数量
-* Core 强制监听 loopback，客户端必须用本机随机 token 完成首帧认证
-* 执行过程不是黑盒，而是通过事件流实时展示到 TUI
-* 每一次 run 都能留下 events、trace、session 记录，方便复盘和排查
-* 多轮会话不是简单拼接历史，而是有 thread、notes、context 分层记忆
-* 会话支持 list/resume/rename/fork/export/delete，TUI 可用 `/sessions` 切换历史
-* 上下文快爆了，不是粗暴截断，而是有水位检测和 compact 压缩
-* 复杂任务可以交给子 Agent，外部工具可以通过 MCP 接进来
-
-我们要做的是一个真正能跑任务、能调工具、能看过程、能管权限、能续上下文、能扩展生态的本地 Agent 运行时。
-
-### 快速运行
+### 1. 安装依赖
 
 ```powershell
+git clone https://github.com/kyletser/kyleclaude.git
+cd kyleclaude
 uv sync
+Copy-Item .env.example .env
+```
+
+macOS/Linux 可使用：
+
+```bash
+cp .env.example .env
+```
+
+### 2. 配置模型
+
+Anthropic：
+
+```dotenv
+KYLE_LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-your-key
+KYLE_LLM_DEFAULT_MODEL=claude-sonnet-4-6
+```
+
+OpenAI-compatible 接口：
+
+```dotenv
+KYLE_LLM_PROVIDER=openai_compatible
+KYLE_LLM_BASE_URL=https://example.com/v1/chat/completions
+KYLE_LLM_API_KEY_ENV=KYLE_LLM_API_KEY
+KYLE_LLM_API_KEY=your-api-key
+KYLE_LLM_DEFAULT_MODEL=your-model
+```
+
+`KYLE_LLM_BASE_URL` 应填写完整的 Chat Completions 地址。密钥只放在本地 `.env` 或系统环境变量中，不要提交到 Git。
+
+OpenCode Zen 示例：
+
+```dotenv
+KYLE_LLM_PROVIDER=openai_compatible
+KYLE_LLM_BASE_URL=https://opencode.ai/zen/go/v1/chat/completions
+KYLE_LLM_API_KEY_ENV=KYLE_LLM_API_KEY
+KYLE_LLM_API_KEY=replace-with-your-key
+KYLE_LLM_DEFAULT_MODEL=deepseek-v4-pro
+```
+
+### 3. 启动 Core 与 TUI
+
+终端 1：
+
+```powershell
 uv run kyle-core
 ```
 
-Core 首次启动会生成 `~/.kyle/ipc-token`。CLI/TUI 自动读取该文件并在发送任何业务命令前
-完成认证；`KYLE_HOST` 只能配置为 `127.0.0.1`、`::1` 或 `localhost`。
-
-另开一个终端启动交互界面：
+终端 2：
 
 ```powershell
 uv run kyle-tui
 ```
 
-无人值守任务默认使用 fail-fast 权限模式，遇到需要审批的工具会立即以退出码 `3` 结束：
+Core 首次启动会生成 `~/.kyle/ipc-token`。CLI/TUI 会自动读取该文件，并在发送业务命令前完成本机认证。
+
+也可以将 Core 放到后台管理：
 
 ```powershell
-uv run kyle run --goal "分析当前项目并运行测试"
-uv run kyle run --goal "修复问题" --permission-mode deny
-uv run kyle run --goal "修改并验证" --permission-mode allow-list `
-  --allow-tool edit_file --allow-tool apply_patch --allow-tool bash
+uv run kyle core start
+uv run kyle core status
+uv run kyle core stop
 ```
 
-`allow-list` 不能绕过命令 deny pattern 或工作区外路径检查；chat/TUI 继续使用交互审批。
+## 使用方式
 
-管理历史会话：
+### TUI
+
+TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块、权限审批、上下文水位和后台任务事件。
+
+| 命令 | 作用 |
+|---|---|
+| `/new` | 创建并切换到新会话 |
+| `/sessions` | 打开历史会话选择器 |
+| `/compact` | 手动执行结构化上下文压缩 |
+| `/skill_name` | 调用已安装 Skill |
+| `Ctrl+Q` | 退出 TUI |
+
+### CLI
+
+CLI 适合脚本、调试和无人值守任务：
+
+```powershell
+uv run kyle ping
+uv run kyle chat
+uv run kyle run --goal "分析项目并运行测试"
+uv run kyle sessions --all
+uv run kyle trace --follow
+```
+
+Headless 任务默认采用 `fail-fast`：遇到需要人工审批的工具立即退出。明确允许自动执行的工具时使用 allow-list：
+
+```powershell
+uv run kyle run --goal "修改并验证代码" `
+  --permission-mode allow-list `
+  --allow-tool edit_file `
+  --allow-tool apply_patch `
+  --allow-tool bash
+```
+
+allow-list 仍不能绕过危险命令规则和工作区边界。
+
+### 会话管理
 
 ```powershell
 uv run kyle sessions --all
-uv run kyle session rename SESSION_ID "新的标题"
+uv run kyle chat --resume SESSION_ID
+uv run kyle session rename SESSION_ID "新标题"
 uv run kyle session fork SESSION_ID --title "实验分支"
 uv run kyle session export SESSION_ID --format markdown -o session.md
 uv run kyle session delete SESSION_ID --yes
 ```
 
-TUI 中输入 `/sessions` 打开会话选择器，输入 `/new` 创建并切换到新会话。
+## 上下文压缩 V2
 
-提交前可运行与 CI 相同的完整门禁（包含 wheel 构建和鉴权 Core smoke）：
+KyleClaude 不会在窗口耗尽时简单删除最早消息。默认策略是：
+
+1. 小型工具输出保留原文，中型输出保留头尾，超大输出优先由 LLM 蒸馏。
+2. 将 `tool_use` 与 `tool_result` 视为不可拆分的协议闭环。
+3. 保留约 25% 最近消息原文，只压缩较旧历史。
+4. 要求模型生成目标、完成项、约束、决策、文件、TODO、错误和关键数据的 JSON 摘要。
+5. 使用 Pydantic 校验结构，并检查约束、TODO、错误和文件路径是否丢失。
+6. 后续压缩增量合并上一版摘要，不重复处理完整 transcript。
+7. TUI 展示触发原因、压缩前后 token、保留消息数、质量分和摘要文件路径。
+
+```toml
+[compaction]
+auto_threshold = 0.80
+retain_ratio = 0.25
+tool_result_limit = 8000
+tool_result_keep = 4000
+tool_result_summarize_threshold = 20000
+```
+
+## 记忆与任务隔离
+
+长期记忆写入 `.kyle/memory/`，支持 `memory_save`、`memory_search` 和 `memory_forget`。当前检索使用确定性的中英文词法打分，没有引入向量数据库或外部 embedding 服务。
+
+复杂任务可以通过任务系统和子 Agent 拆分。`task_claim` 提供原子认领；worktree 工具将并行修改限制在 `.kyle/worktrees/`；子 Agent 的文件、Bash、Git 和 Checkpoint 工具都会绑定到指定 worktree。
+
+后台命令由 daemon 级注册表持有，因此可以跨对话轮次查询和取消；daemon 退出时会清理关联进程树。
+
+## 项目结构
+
+```text
+src/kyle_claude/
+├── cli/                 # CLI 命令与 IPC 客户端
+├── tui/                 # Textual 终端界面
+└── core/
+    ├── bus/             # 类型化命令、事件与 JSON-RPC envelope
+    ├── transport/       # TCP NDJSON server/client 与认证
+    ├── compact/         # 上下文预算、结构化摘要和协议校验
+    ├── tools/           # 工具注册、调用、权限与内置工具
+    ├── session/         # 会话、transcript、导出和恢复
+    ├── memory/          # 项目长期记忆
+    ├── background/      # daemon 级后台任务
+    ├── task/            # 多 Agent 任务状态
+    ├── worktree/        # Git worktree 生命周期
+    ├── subagent/        # 子 Agent 调度
+    ├── hooks/           # 异步生命周期扩展点
+    ├── skills/          # Skill 加载
+    └── mcp/             # MCP server 管理
+```
+
+## 开发与验证
+
+```powershell
+uv run ruff check .
+uv run mypy src
+uv run pytest -q
+uv run python scripts\gen_protocol_doc.py --check
+```
+
+完整发布前门禁：
 
 ```powershell
 make verify
 ```
 
-当前能力的逐项证据、验证边界和剩余 Phase 1 工作见
-[`docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md`](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)。
+当前测试基线为 `407 passed, 3 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、上下文压缩、会话恢复、记忆、后台任务和 worktree 管理。
 
-你学完之后，再看 Claude Code、Codex、Cursor 这些 AI 编程工具，就不会只停留在“它好像很智能”。
+## 设计文档
 
-你能看懂它背后那条工程主线：
+- [技术架构](TECH_ARCHITECTURE.md)
+- [Wire Protocol](WIRE_PROTOCOL.md)
+- [运行手册](RUNBOOK.md)
+- [轻量 Agent 完成度审计](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)
+- [与 Claude Code 的差距分析](docs/KYLECLAUDE_VS_CLAUDE_CODE_GAP_ANALYSIS.md)
+- [learn-claude-code 机制移植说明](docs/LEARN_CLAUDE_CODE_PORT.md)
 
-**用户目标 → Agent Loop → 模型思考 → 工具调用 → 结果回填 → 事件展示 → 会话续航。**
+## 项目定位
 
-### KyleClaude 长什么样？
+KyleClaude 适合作为 AI Agent 工程方向的学习与求职项目，因为它能够完整讨论以下问题：
 
-KyleClaude 的最终形态是这样的：
+- 为什么采用 daemon + client，而不是单进程脚本？
+- 如何保证工具调用的类型安全、权限安全和文件事务安全？
+- 如何让长会话在压缩、崩溃和取消后继续运行？
+- 如何隔离并行子 Agent 的代码修改？
+- 如何用事件、Trace 和测试证明 Agent 不是黑盒？
 
-![](docs/images/2026-06-10_14-30-58.jpg)
+项目仍是面向学习和本地开发的 mini Coding Agent，不宣称一比一复刻 Claude Code 或 Codex。
 
-用户不是直接和一个脚本对话，而是通过 `kyle` CLI 或 `kyle-tui` 连接到常驻的 `kyle-core` 守护进程。
+## License
 
-真正执行任务的是 Core daemon。
-
-CLI 和 TUI 只是客户端。
-
-这意味着：
-
-* TUI 崩了，Agent 任务不一定要跟着死
-* 后续可以同时接 CLI、TUI、Web 前端
-* 所有任务过程都能通过事件流订阅
-* 所有命令、响应、事件都要通过类型化协议通信
-* Agent 的工具调用、会话记忆、权限审批、上下文压缩，都在同一条运行链路里完成
-
-这就是它和普通 AI Demo 最大的区别：
-
-**普通 Demo 是“调用模型”。KyleClaude 是“搭一个本地 Agent 运行时”。**
-
-### 项目专栏目录
-
-![](docs/images/2026-06-10_11-55-26.jpg)
-
-从项目演示，运行到 项目实战：架构如何设计、环境怎么搭，Agent loop，上下文、可压缩、MCP、skill支持这些如恶化设计。
-
-最后再到求职相关：项目的简历写法、项目亮点、本项目常见面试题，都给大家准备好了。
-
-从**项目源码到答疑，一条龙服务，不用担心学不会，有什么问题都可以在专属微信群提问**：（[知识星球](https://programmercarl.com/other/kstar.html)里每个项目都有专属答疑群）
-
-![](docs/images/2026-06-10_14-34-29.jpg)
-
-### 项目特色
-
-这个项目，我采用全新的讲解方式，不是一下子直接给大家全部项目代码。
-
-而且分成了 8个阶段，一步一步，带大家实现完整的kyleClaude。
-
-每个阶段都不是堆功能，而是解决一个真实的 Agent 工程问题。
-
-![](docs/images/2026-06-10_11-01-32.jpg)
-
-| 阶段 | 主题 | 这一阶段真正解决的问题 |
-| --- | --- | --- |
-| S0 | 骨架与协议契约 | CLI 和 daemon 通过真实 IPC 完成一次 ping/pong |
-| S1 | Agent 最小闭环 | 一次 `kyle run` 从 goal 到 LLM、工具、事件文件完整跑通 |
-| S2 | 事件流外化 | AgentRunner 搬进 daemon，CLI/TUI 通过 IPC 订阅同一份事件流 |
-| S3 | 自主规划与 TUI | Agent 能用任务工具拆解复杂目标，TUI 展示完整执行过程 |
-| Trace | 系统级时间线 | IPC / EventBus / LLM 三层数据流可追踪、可回放 |
-| S4 | 会话与记忆 | 多轮 run 进入同一个 session，thread 和 notes 接住上下文 |
-| S5 | 工具安全 | 工具调用前有参数校验、权限审批、失败分类和重试 |
-| S6 | 上下文治理 | 长会话下有 context 水位、tool_result 截断和 compact |
-| S7 | 扩展边界 | Skills、Subagents、MCP 让 Agent 可组织、可派生、可接外部工具 |
-
-从第一章开始，项目就不是“先写一个脚本，后面再慢慢重构”。
-
-KyleClaude 在 S0 就先把 `kyle` CLI 和 `kyle-core` daemon 拆开，通过 TCP NDJSON + JSON-RPC 2.0 通信。
-
-这一步看起来比普通脚手架更重，但它换来的是后面所有能力都不用推倒重来：
-
-* TUI 可以复用同一套 IPC
-* 事件订阅可以复用同一套通道
-* 权限审批可以通过事件推到前端
-* trace 可以关联请求和响应，同时默认移除业务 payload，且永不记录 IPC 认证帧
-* 后续 Web 前端也可以接入同一个 Core
-
-这就是工程项目里真正值钱的地方。
-
-不是“能不能跑”，而是系统边界一开始就立住。
-
-### 项目架构图
-
-![](docs/images/20260610114820_KyleClaude架构图-分层版.png)
-
-KyleClaude 的核心不是一个 prompt，而是一套完整的本地 Agent 运行链路：
-
-```latex
-用户目标
-  → CLI / TUI
-  → JSON-RPC over NDJSON
-  → kyle-core daemon
-  → AgentRunner
-  → AgentLoop
-  → LLM Provider
-  → ToolRegistry
-  → PermissionManager
-  → EventBus
-  → Session Store
-  → TUI 实时渲染 / events.jsonl 持久化 / trace 回放
-```
-
-你学完以后，面试官再问 AI Agent 项目，你就不是说：
-
-“我调用了大模型 API。”
-
-而是能说：
-
-* 我实现了 ReAct AgentLoop 和工具调用闭环
-* 我用 EventBus 把 Agent 执行过程外化成事件流
-* 我实现了 TUI 实时渲染、工具折叠块、权限审批卡片
-* 我实现了 Session、thread、notes 三层记忆体系
-* 我实现了上下文水位检测、tool_result 截断、自动 compact 和手动 compact
-* 我实现了 Skills、Subagents、MCP 外部工具接入
-* 我用 pytest、mypy strict、ruff 保证项目质量
-* 我实现了守护进程 + 多客户端架构
-* 我设计了 JSON-RPC 2.0 + NDJSON 的类型化 IPC 协议
-
-这就不是“AI 套壳项目”了。
-
-这是一个能拿去讲系统设计、异步并发、协议建模、工具安全、上下文工程、多 Agent 编排的高质量项目。
-
-### 项目亮点
-
-![](docs/images/2026-06-10_11-48-11.jpg)
-
-KyleClaude 最大的亮点，是把 Claude Code 这类 AI 编程 Agent 背后的核心机制，用一个 mini 版工程完整跑通：它不是单进程脚本，而是 `kyle-core` daemon + CLI/TUI 多客户端架构；
-
-不是一次性调大模型，而是 ReAct AgentLoop，支持模型思考、工具调用、结果回填和多步执行；
-
-不是让模型说执行就执行，而是把工具调用放进 `ToolRegistry` 和 `PermissionManager`，先做参数校验、权限审批、失败分类，再把 tool result 返回给模型；
-
-不是只展示最终答案，而是通过 `EventBus`、events、trace 和 TUI，把 token 流、工具调用、审批、上下文水位都实时展示并可回放；
-
-不是简单拼接聊天历史，而是用 session、thread、notes、context 和 compact 做上下文治理；
-
-最后还支持 Skills、Subagents、MCP，把工作流、子 Agent 和外部工具统一接进同一套运行链路。
-
-也就是说，这个项目真正能讲的不是“我接了一个大模型接口”，而是“我实现了一个本地 Agent 运行时”。
-
-
-### 这个项目适合谁？
-
-如果你正在准备秋招、春招、实习、社招，想做一个 AI 项目，想了解Agent工作原理，这个项目很适合你。
-
-如果你已经做过 RAG、聊天机器人、AI 助手，想把项目深度往 Agent 工程方向拔高，这个项目也很适合。
-
-如果你想理解 Claude Code、Codex、Cursor 这类 AI 编程工具背后的运行时设计，这个项目同样值得系统学一遍。
-
-它不是教你背概念。
-
-**它是带你从 S0 到 S7，八个阶段，把一个本地 Agent 工具从零搭出来**。
-
-每一章都有明确的执行路径，每一阶段都能运行、能验证、能留下文件证据。
-
-你不是最后拿到一个黑盒项目。
-
-你会知道它每一层为什么存在。
-
-### QA
-
-**1、这个项目有视频吗**？
-
-项目如何配置环境，启动，部署，运行，已经功能介绍，是有视频的。
-
-主要项目讲解为文字专栏的方式。
-
-项目有专属答疑微信群，不懂得的地方可以在群里提问，我们都会答疑。
-
-**2、这个项目用什么语言开发**？
-
-Python
-
-**3、KyleClaude项目用Python实现，有其他语言版本吗**？
-
-实现一个Agent 关键在于Agent的原理，面试官不会问你 你用什么语言实现的Agent。
-
-就像大家目前看到 Claude原理的文章，没有人会重点强调这是用什么语言实现的，而是强调Claude 这个agent的原理。
-
-所以 在开发 KyleClaude，我们考虑使用python，就是因为python最容易上手。
-
-**4、我是C++、Java、Go或者其他语言选手，能做这个项目吗**？
-
-如果是 C++、Java、Go或者其他语言选手，做个项目没问题，这个项目写简历上，面试官也不会问你语言问题，而是聚焦Agent的设计与实现。
-
-我们项目专栏上，简历写法，项目亮点，都不强调编程语言，都聚焦Agent原理。
+[MIT](LICENSE)
