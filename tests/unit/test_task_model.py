@@ -16,7 +16,17 @@ def test_task_to_dict_keys() -> None:
         updated_at="2024-01-01T00:00:00",
     )
     d = task.to_dict()
-    assert set(d) == {"id", "subject", "description", "status", "blocked_by", "created_at", "updated_at"}
+    assert set(d) == {
+        "id",
+        "subject",
+        "description",
+        "status",
+        "blocked_by",
+        "created_at",
+        "updated_at",
+        "owner",
+        "worktree",
+    }
 
 
 # 功能：验证 Task.from_dict() 能正确还原所有字段

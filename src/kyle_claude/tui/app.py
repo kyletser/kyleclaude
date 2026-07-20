@@ -894,12 +894,28 @@ class KyleTuiApp(App[None]):
             )
             summary_tokens = result.get("summary_tokens", 0)
             saved_tokens = result.get("saved_tokens", 0)
-            self._last_context_pct = 0.0
+            retained_messages = result.get("retained_messages", 0)
+            retained_tokens = result.get("retained_tokens", 0)
+            quality = float(result.get("quality_score", 0.0))
+            summary_path = str(result.get("summary_path", ""))
+            original_tokens = int(result.get("original_tokens", 0))
+            compacted_tokens = int(result.get("compacted_tokens", 0))
+            if original_tokens > 0:
+                self._last_context_pct *= compacted_tokens / original_tokens
+            else:
+                self._last_context_pct = 0.0
             self._append(Static(
                 f"[bold cyan]⚡ Context compacted[/bold cyan]"
-                f"  [dim]summary={summary_tokens} tokens  saved≈{saved_tokens} tokens[/dim]",
+                f"  [dim]trigger=manual  summary={summary_tokens}  "
+                f"retained={retained_messages} msgs/{retained_tokens} tokens  "
+                f"saved≈{saved_tokens}  quality={quality:.0%}[/dim]",
                 classes="log-line",
             ))
+            if summary_path:
+                self._append(Static(
+                    f"[dim]  summary file: {summary_path}[/dim]",
+                    classes="log-line",
+                ))
         except (IpcError, RuntimeError, OSError) as e:
             self._append(Static(f"[red]compact error: {e}[/red]", classes="log-line"))
 
@@ -1326,6 +1342,31 @@ class KyleTuiApp(App[None]):
                     classes="log-line",
                 ))
 
+        elif t == "background.started":
+            job_id = str(event.get("job_id", ""))
+            command = _preview(str(event.get("command", "")), 76)
+            self._append(
+                Static(
+                    f"[dim]background[/dim]  [cyan]{job_id}[/cyan]  [dim]{command}[/dim]",
+                    classes="log-line",
+                )
+            )
+
+        elif t == "background.finished":
+            job_id = str(event.get("job_id", ""))
+            status = str(event.get("status", ""))
+            marker = (
+                "[bold green]✓[/bold green]"
+                if status == "completed"
+                else "[bold red]✗[/bold red]"
+            )
+            self._append(
+                Static(
+                    f"{marker} [cyan]{job_id}[/cyan]  [dim]{status}[/dim]",
+                    classes="log-line",
+                )
+            )
+
         elif t == "step.started":
             run_id = event.get("run_id", "")
             if run_id in self._subagent_run_ids:
@@ -1405,12 +1446,28 @@ class KyleTuiApp(App[None]):
         elif t == "context.compacted":
             orig = event.get("original_tokens", 0)
             summary = event.get("summary_tokens", 0)
-            self._last_context_pct = 0.0
+            compacted = event.get("compacted_tokens", 0)
+            retained_messages = event.get("retained_messages", 0)
+            retained_tokens = event.get("retained_tokens", 0)
+            quality = float(event.get("quality_score", 0.0))
+            trigger = event.get("trigger", "auto")
+            summary_path = str(event.get("summary_path", ""))
+            if int(orig) > 0:
+                self._last_context_pct *= int(compacted) / int(orig)
+            else:
+                self._last_context_pct = 0.0
             self._append(Static(
                 f"[bold cyan]⚡ Context compacted[/bold cyan]"
-                f"  [dim]original≈{orig} tokens → summary={summary} tokens[/dim]",
+                f"  [dim]trigger={trigger}  original≈{orig} → compacted≈{compacted}  "
+                f"summary={summary}  retained={retained_messages} msgs/{retained_tokens} tokens  "
+                f"quality={quality:.0%}[/dim]",
                 classes="log-line",
             ))
+            if summary_path:
+                self._append(Static(
+                    f"[dim]  summary file: {summary_path}[/dim]",
+                    classes="log-line",
+                ))
 
         elif t == "permission.requested":
             tool_use_id = str(event.get("tool_use_id", ""))

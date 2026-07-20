@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 import kyle_claude
+from kyle_claude.core.background import BackgroundJobRegistry
 from kyle_claude.core.bus.commands import (
     AgentRunCommand,
     AgentRunResult,
@@ -83,6 +84,7 @@ class CoreApp:
         self._sessions: SessionManager | None = None
         self._permission_manager: PermissionManager | None = None
         self._mcp_manager: McpServerManager | None = None
+        self._background_registry = BackgroundJobRegistry(self._bus)
 
     # 处理 core.ping 请求，返回服务版本、运行时长和接收时间
     async def _ping_handler(self, params: dict[str, Any]) -> PongResult:
@@ -355,6 +357,7 @@ class CoreApp:
                 trace=self._trace,
                 permission_manager=self._permission_manager,
                 mcp_manager=self._mcp_manager,
+                background_registry=self._background_registry,
             ),
             bus=self._bus,
             provider=compact_provider,
@@ -407,6 +410,7 @@ class CoreApp:
             await asyncio.gather(*self._running_runs, return_exceptions=True)
         if self._mcp_manager is not None:
             await self._mcp_manager.stop_all()
+        await self._background_registry.cancel_all()
         await server.stop()
         if self._trace is not None:
             await self._trace.stop()

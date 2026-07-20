@@ -29,6 +29,7 @@ from kyle_claude.core.tools.builtin.glob import GlobTool
 from kyle_claude.core.tools.builtin.grep import GrepTool
 from kyle_claude.core.tools.builtin.list_dir import ListDirTool
 from kyle_claude.core.tools.builtin.read_file import ReadFileTool
+from kyle_claude.core.tools.builtin.task_claim import TaskClaimTool
 from kyle_claude.core.tools.builtin.task_create import TaskCreateTool
 from kyle_claude.core.tools.builtin.task_get import TaskGetTool
 from kyle_claude.core.tools.builtin.task_list import TaskListTool
@@ -36,6 +37,7 @@ from kyle_claude.core.tools.builtin.task_update import TaskUpdateTool
 from kyle_claude.core.tools.builtin.write_file import WriteFileTool
 from kyle_claude.core.tools.registry import ToolRegistry
 from kyle_claude.core.workspace import WorkspaceBoundary
+from kyle_claude.core.worktree import WorktreeError, WorktreeManager
 
 if TYPE_CHECKING:
     from kyle_claude.core.llm.base import LLMProvider
@@ -54,6 +56,7 @@ class SpawnAgentParams(BaseModel):
     prompt: str
     run_in_background: bool = False
     subagent_type: str = ""
+    worktree: str = ""
 
 
 # 在隔离的冷启动上下文中派生子 agent，支持前台阻塞和后台并行两种模式
@@ -86,6 +89,13 @@ class SpawnAgentTool(BaseTool):
             "subagent_type": {
                 "type": "string",
                 "description": "Agent role profile (planner/executor/reviewer). Leave empty for default.",  # noqa: E501
+            },
+            "worktree": {
+                "type": "string",
+                "description": (
+                    "Optional managed worktree name from worktree_create. "
+                    "All child file and bash tools are confined to that worktree."
+                ),
             },
         },
         "required": ["description", "prompt"],
@@ -140,6 +150,26 @@ class SpawnAgentTool(BaseTool):
             system_prompt_override=profile.system_prompt if profile else None,
         )
 
+        child_boundary = self._workspace_boundary
+        if p.worktree:
+            try:
+                worktree_path = WorktreeManager(
+                    self._workspace_boundary.root
+                ).path_for(p.worktree)
+            except WorktreeError as exc:
+                return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")
+            if not worktree_path.is_dir():
+                return ToolResult(
+                    content=f"managed worktree not found: {p.worktree}",
+                    is_error=True,
+                    error_type="runtime_error",
+                )
+            child_boundary = WorkspaceBoundary(worktree_path)
+            child_context.project_context = (
+                f"You are isolated in Git worktree '{p.worktree}' at {worktree_path}. "
+                "All file and shell operations must remain in this worktree."
+            )
+
         child_bus = EventBus()
 
         # 将子 bus 所有事件桥接到父 bus，TUI 据此渲染嵌套进度
@@ -148,7 +178,12 @@ class SpawnAgentTool(BaseTool):
 
         child_bus.subscribe(_bridge)
 
-        child_registry = self._build_child_registry(child_bus, child_run_id, profile)
+        child_registry = self._build_child_registry(
+            child_bus,
+            child_run_id,
+            profile,
+            child_boundary,
+        )
         child_loop = AgentLoop(
             self._provider,
             child_registry,
@@ -252,6 +287,7 @@ class SpawnAgentTool(BaseTool):
         child_bus: EventBus,
         child_run_id: str,
         profile: AgentProfile | None,
+        boundary: WorkspaceBoundary,
     ) -> ToolRegistry:
         from kyle_claude.core.task.manager import TaskManager
 
@@ -265,27 +301,27 @@ class SpawnAgentTool(BaseTool):
         registry = ToolRegistry()
         checkpoint_store = CheckpointStore(
             self._runs_dir / child_run_id / ".checkpoints",
-            self._workspace_boundary,
+            boundary,
         )
         _all_tools = [
-            ReadFileTool(self._workspace_boundary),
-            GlobTool(self._workspace_boundary),
-            GrepTool(self._workspace_boundary),
-            GitDiffTool(self._workspace_boundary),
-            BashTool(),
+            ReadFileTool(boundary),
+            GlobTool(boundary),
+            GrepTool(boundary),
+            GitDiffTool(boundary),
+            BashTool(boundary.root),
             EditFileTool(
-                self._workspace_boundary,
+                boundary,
                 checkpoint_store=checkpoint_store,
             ),
             ApplyPatchTool(
-                self._workspace_boundary,
+                boundary,
                 checkpoint_store=checkpoint_store,
             ),
             WriteFileTool(
-                self._workspace_boundary,
+                boundary,
                 checkpoint_store=checkpoint_store,
             ),
-            ListDirTool(self._workspace_boundary),
+            ListDirTool(boundary),
         ]
         for t in _all_tools:
             if _allowed(t.name):
@@ -300,6 +336,7 @@ class SpawnAgentTool(BaseTool):
         child_task_manager = TaskManager(self._runs_dir / child_run_id / ".tasks")
         for t in [
             TaskCreateTool(child_task_manager),
+            TaskClaimTool(child_task_manager),
             TaskUpdateTool(child_task_manager),
             TaskListTool(child_task_manager),
             TaskGetTool(child_task_manager),
@@ -318,7 +355,7 @@ class SpawnAgentTool(BaseTool):
                 runs_dir=self._runs_dir,
                 session_id=self._session_id,
                 depth=self._depth + 1,
-                workspace_boundary=self._workspace_boundary,
+                workspace_boundary=boundary,
             )
             if _allowed("spawn_agent"):
                 registry.register(nested)

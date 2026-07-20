@@ -59,10 +59,12 @@ class PermissionConfig:
 
 @dataclass
 class CompactionConfig:
-    # context_pct 触发自动压缩的阈值（0 表示禁用，推荐用手动 /compact）
-    auto_threshold: float = 0.0
+    # context_pct 触发自动压缩的阈值（0 表示禁用）
+    auto_threshold: float = 0.80
+    retain_ratio: float = 0.25  # 压缩后保留的最近原文 token 比例
     tool_result_limit: int = 8_000  # tool_result 截断触发字符数
     tool_result_keep: int = 4_000   # 截断后保留的前缀字符数
+    tool_result_summarize_threshold: int = 20_000  # 超过后优先使用 LLM 蒸馏
 
 
 @dataclass
@@ -286,7 +288,13 @@ def _apply_toml(config: KyleConfig, data: dict[str, Any]) -> None:
         comp = data["compaction"]
         if not isinstance(comp, dict):
             raise SystemExit("Config error: [compaction] must be a table")
-        known_compaction = {"auto_threshold", "tool_result_limit", "tool_result_keep"}
+        known_compaction = {
+            "auto_threshold",
+            "retain_ratio",
+            "tool_result_limit",
+            "tool_result_keep",
+            "tool_result_summarize_threshold",
+        }
         unknown_comp: set[str] = set(comp.keys()) - known_compaction
         if unknown_comp:
             raise SystemExit(f"Unknown [compaction] keys: {', '.join(sorted(unknown_comp))}")
@@ -295,6 +303,11 @@ def _apply_toml(config: KyleConfig, data: dict[str, Any]) -> None:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise SystemExit("Config error: compaction.auto_threshold must be between 0 and 1")
             config.compaction.auto_threshold = float(val)
+        if "retain_ratio" in comp:
+            val = comp["retain_ratio"]
+            if not isinstance(val, (int, float)) or not (0.0 < val < 1.0):
+                raise SystemExit("Config error: compaction.retain_ratio must be between 0 and 1")
+            config.compaction.retain_ratio = float(val)
         if "tool_result_limit" in comp:
             val = comp["tool_result_limit"]
             if not isinstance(val, int) or val <= 0:
@@ -309,6 +322,14 @@ def _apply_toml(config: KyleConfig, data: dict[str, Any]) -> None:
                     "Config error: compaction.tool_result_keep must be a positive integer"
                 )
             config.compaction.tool_result_keep = val
+        if "tool_result_summarize_threshold" in comp:
+            val = comp["tool_result_summarize_threshold"]
+            if not isinstance(val, int) or val <= 0:
+                raise SystemExit(
+                    "Config error: compaction.tool_result_summarize_threshold must be a "
+                    "positive integer"
+                )
+            config.compaction.tool_result_summarize_threshold = val
 
     if "mcp" in data:
         mcp = data["mcp"]
@@ -491,6 +512,22 @@ def _apply_env(config: KyleConfig) -> None:
                 f"Config error: KYLE_COMPACT_THRESHOLD must be a number, got: {compact_threshold!r}"
             )
 
+    compact_retain_ratio = os.environ.get("KYLE_COMPACT_RETAIN_RATIO")
+    if compact_retain_ratio is not None:
+        try:
+            compact_retain_ratio_val = float(compact_retain_ratio)
+            if not (0.0 < compact_retain_ratio_val < 1.0):
+                raise SystemExit(
+                    "Config error: KYLE_COMPACT_RETAIN_RATIO must be between 0 and 1, "
+                    f"got: {compact_retain_ratio!r}"
+                )
+            config.compaction.retain_ratio = compact_retain_ratio_val
+        except ValueError:
+            raise SystemExit(
+                "Config error: KYLE_COMPACT_RETAIN_RATIO must be a number, "
+                f"got: {compact_retain_ratio!r}"
+            )
+
     compact_tool_limit = os.environ.get("KYLE_COMPACT_TOOL_LIMIT")
     if compact_tool_limit is not None:
         try:
@@ -521,4 +558,20 @@ def _apply_env(config: KyleConfig) -> None:
             raise SystemExit(
                 "Config error: KYLE_COMPACT_TOOL_KEEP must be an integer, "
                 f"got: {compact_tool_keep!r}"
+            )
+
+    compact_tool_summary = os.environ.get("KYLE_COMPACT_TOOL_SUMMARY_THRESHOLD")
+    if compact_tool_summary is not None:
+        try:
+            compact_tool_summary_val = int(compact_tool_summary)
+            if compact_tool_summary_val <= 0:
+                raise SystemExit(
+                    "Config error: KYLE_COMPACT_TOOL_SUMMARY_THRESHOLD must be positive, "
+                    f"got: {compact_tool_summary!r}"
+                )
+            config.compaction.tool_result_summarize_threshold = compact_tool_summary_val
+        except ValueError:
+            raise SystemExit(
+                "Config error: KYLE_COMPACT_TOOL_SUMMARY_THRESHOLD must be an integer, "
+                f"got: {compact_tool_summary!r}"
             )

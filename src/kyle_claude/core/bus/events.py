@@ -175,6 +175,12 @@ class ContextCompactedEvent(BaseModel):
     run_id: str
     original_tokens: int
     summary_tokens: int
+    retained_tokens: int = 0
+    retained_messages: int = 0
+    compacted_tokens: int = 0
+    quality_score: float = 1.0
+    trigger: str = "auto"
+    summary_path: str = ""
     ts: str
 
 
@@ -223,6 +229,25 @@ class SubagentFinishedEvent(BaseModel):
     ts: str
 
 
+class BackgroundJobStartedEvent(BaseModel):
+    type: Literal["background.started"] = "background.started"
+    job_id: str
+    run_id: str
+    session_id: str
+    command: str
+    ts: str
+
+
+class BackgroundJobFinishedEvent(BaseModel):
+    type: Literal["background.finished"] = "background.finished"
+    job_id: str
+    run_id: str
+    session_id: str
+    status: str
+    output_preview: str
+    ts: str
+
+
 class SkillInvokedEvent(BaseModel):
     type: Literal["skill.invoked"] = "skill.invoked"
     skill_name: str
@@ -260,6 +285,8 @@ Event = Annotated[
     | PermissionDeniedEvent
     | SubagentStartedEvent
     | SubagentFinishedEvent
+    | BackgroundJobStartedEvent
+    | BackgroundJobFinishedEvent
     | SkillInvokedEvent,
     Discriminator("type"),
 ]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +43,10 @@ class BashTool(BaseTool):
         "required": ["command"],
     }
 
+    # 初始化可选固定工作目录，供 worktree 隔离的 subagent 使用
+    def __init__(self, cwd: Path | None = None) -> None:
+        self._cwd = cwd
+
     # 在子进程中执行 shell 命令，合并 stdout/stderr，超时或非零退出码时返回错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         p = BashParams.model_validate(params)
@@ -52,6 +57,7 @@ class BashTool(BaseTool):
             if os.name == "nt":
                 proc = await asyncio.create_subprocess_shell(
                     command,
+                    cwd=self._cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
@@ -59,6 +65,7 @@ class BashTool(BaseTool):
             else:
                 proc = await asyncio.create_subprocess_shell(
                     command,
+                    cwd=self._cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     start_new_session=True,

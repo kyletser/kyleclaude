@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from kyle_claude.core.compact.compactor import Compactor
 from kyle_claude.core.context import ExecutionContext
 from kyle_claude.core.events.bus import EventBus
 from kyle_claude.core.llm.types import LlmResponse, ToolCallBlock
@@ -303,3 +304,53 @@ async def test_assistant_message_blocks_added_to_context() -> None:
     blocks = assistant_msg["content"]
     assert blocks[0]["type"] == "text"  # type: ignore[index]
     assert blocks[0]["text"] == "answer"  # type: ignore[index]
+
+
+# 功能：验证上下文超限时 loop 自动压缩一次并继续完成原任务
+# 设计：序列 provider 依次抛超限、返回摘要、返回最终答案，精确覆盖 reactive compact 恢复链
+async def test_context_overflow_compacts_and_recovers(tmp_path: Path) -> None:
+    class _SequenceProvider:
+        # 初始化三阶段调用计数器
+        def __init__(self) -> None:
+            self.calls = 0
+
+        # 按调用阶段模拟超限、压缩摘要和恢复后的最终响应
+        async def chat(
+            self,
+            messages: list[dict[str, object]],
+            tool_schemas: list[dict[str, object]],
+            bus: EventBus,
+            run_id: str,
+            *,
+            step: int = 0,
+            system: str | None = None,
+        ) -> LlmResponse:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("context_length_exceeded")
+            if self.calls == 2:
+                return LlmResponse(
+                    stop_reason="end_turn",
+                    text=(
+                        '{"goal":"recover","completed":[],"constraints":[],'
+                        '"decisions":[],"files":[],"todos":[],"errors":[],'
+                        '"critical_data":[]}'
+                    ),
+                )
+            return LlmResponse(stop_reason="end_turn", text="recovered")
+
+    provider = _SequenceProvider()
+    bus = EventBus()
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        bus,
+        compactor=Compactor(bus, tmp_path, "sess-1"),
+    )
+    context = _ctx()
+
+    await loop.run(context)
+
+    assert context.status == "success"
+    assert context.result == "recovered"
+    assert provider.calls == 3

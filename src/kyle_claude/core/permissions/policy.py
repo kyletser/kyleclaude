@@ -40,6 +40,10 @@ class ToolPolicy:
 DEFAULT_POLICIES: dict[str, ToolPolicy] = {
     "apply_patch": ToolPolicy(default=PermissionDecision.ASK),
     "bash":       ToolPolicy(default=PermissionDecision.ASK),
+    "background_start": ToolPolicy(default=PermissionDecision.ASK),
+    "background_result": ToolPolicy(default=PermissionDecision.ALLOW),
+    "background_list": ToolPolicy(default=PermissionDecision.ALLOW),
+    "background_cancel": ToolPolicy(default=PermissionDecision.ASK),
     "checkpoint_rewind": ToolPolicy(default=PermissionDecision.ASK),
     "edit_file":  ToolPolicy(default=PermissionDecision.ASK),
     "write_file": ToolPolicy(default=PermissionDecision.ASK),
@@ -50,12 +54,19 @@ DEFAULT_POLICIES: dict[str, ToolPolicy] = {
     "git_diff":   ToolPolicy(default=PermissionDecision.ALLOW),
     "grep":       ToolPolicy(default=PermissionDecision.ALLOW),
     "note_save":  ToolPolicy(default=PermissionDecision.ALLOW),
+    "memory_save": ToolPolicy(default=PermissionDecision.ALLOW),
+    "memory_search": ToolPolicy(default=PermissionDecision.ALLOW),
+    "memory_forget": ToolPolicy(default=PermissionDecision.ASK),
     "task_create": ToolPolicy(default=PermissionDecision.ALLOW),
+    "task_claim": ToolPolicy(default=PermissionDecision.ALLOW),
     "task_get": ToolPolicy(default=PermissionDecision.ALLOW),
     "task_list": ToolPolicy(default=PermissionDecision.ALLOW),
     "task_update": ToolPolicy(default=PermissionDecision.ALLOW),
     "agent_result": ToolPolicy(default=PermissionDecision.ALLOW),
     "spawn_agent": ToolPolicy(default=PermissionDecision.ASK),
+    "worktree_create": ToolPolicy(default=PermissionDecision.ASK),
+    "worktree_list": ToolPolicy(default=PermissionDecision.ALLOW),
+    "worktree_remove": ToolPolicy(default=PermissionDecision.ASK),
 }
 
 # 未在 DEFAULT_POLICIES 中登记的工具的兜底策略

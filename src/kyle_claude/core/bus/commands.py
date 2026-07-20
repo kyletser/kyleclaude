@@ -193,6 +193,12 @@ class SessionCompactCommand(BaseModel):
 class SessionCompactResult(BaseModel):
     summary_tokens: int
     saved_tokens: int
+    original_tokens: int = 0
+    compacted_tokens: int = 0
+    retained_tokens: int = 0
+    retained_messages: int = 0
+    quality_score: float = 1.0
+    summary_path: str = ""
 
 
 # 根据 type 字段决定命令类型的判别联合

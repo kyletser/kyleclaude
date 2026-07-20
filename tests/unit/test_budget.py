@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from kyle_claude.core.compact.budget import truncate_tool_results
+from unittest.mock import AsyncMock, MagicMock
+
+from kyle_claude.core.compact.budget import distill_tool_results, truncate_tool_results
+from kyle_claude.core.llm.types import LlmResponse
 
 
 def _make_tool_result_msg(content: str) -> dict:
@@ -28,7 +31,8 @@ def test_long_tool_result_truncated() -> None:
     truncated = result[0]["content"][0]["content"]
     assert len(truncated) < len(text)
     assert "chars omitted" in truncated
-    assert truncated.startswith("y" * 4000)
+    assert truncated.startswith("y" * 2000)
+    assert truncated.endswith("y" * 2000)
 
 
 # 功能：验证 tool_result 内容恰好等于阈值时不截断
@@ -74,3 +78,39 @@ def test_assistant_message_untouched() -> None:
     msgs = [{"role": "assistant", "content": text}]
     result = truncate_tool_results(msgs, limit=8000, keep=4000)
     assert result[0]["content"] == text
+
+
+# 功能：验证超大工具输出由 LLM 蒸馏并保留来源 ID 与原始长度
+# 设计：使用 AsyncMock 返回短摘要，区分蒸馏策略与确定性截断策略
+async def test_huge_tool_result_is_distilled() -> None:
+    provider = MagicMock()
+    provider.chat = AsyncMock(return_value=LlmResponse(stop_reason="end_turn", text="42 tests passed"))
+    messages = [_make_tool_result_msg("log line\n" * 4000)]
+
+    result, stats = await distill_tool_results(messages, provider, threshold=20_000)
+
+    content = result[0]["content"][0]["content"]
+    assert content.startswith("[Kyle distilled tool output id=id1")
+    assert "42 tests passed" in content
+    assert stats.distilled == 1
+    assert stats.truncated == 0
+
+
+# 功能：验证工具输出蒸馏失败时自动降级为头尾截断
+# 设计：让 provider 抛异常，断言主链仍得到有界输出而不是传播错误
+async def test_huge_tool_result_distill_failure_falls_back() -> None:
+    provider = MagicMock()
+    provider.chat = AsyncMock(side_effect=RuntimeError("offline"))
+    messages = [_make_tool_result_msg("x" * 30_000)]
+
+    result, stats = await distill_tool_results(
+        messages,
+        provider,
+        threshold=20_000,
+        fallback_keep=4_000,
+    )
+
+    content = result[0]["content"][0]["content"]
+    assert "chars omitted" in content
+    assert stats.distilled == 0
+    assert stats.truncated == 1

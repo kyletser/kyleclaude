@@ -251,7 +251,12 @@ async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
     store.append_note("sess-1", "Python 3.12", "run-old")
 
     provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
-    runner = AgentRunner(_config(), provider=provider, runs_dir=tmp_path / "runs")
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        runs_dir=tmp_path / "runs",
+        workspace_root=tmp_path,
+    )
 
     await runner.run_and_capture("remember python", run_id="run-new", session=session, store=store)
 
@@ -309,7 +314,12 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
     )
     store.append_message("sess-1", "user", "remember")
 
-    runner = AgentRunner(_config(max_steps=3), provider=_NoteProvider(), runs_dir=tmp_path)
+    runner = AgentRunner(
+        _config(max_steps=3),
+        provider=_NoteProvider(),
+        runs_dir=tmp_path,
+        workspace_root=tmp_path,
+    )
     await runner.run_and_capture("remember", run_id="run-1", session=session, store=store)
 
     assert "Use Python 3.12" in store.read_notes("sess-1")

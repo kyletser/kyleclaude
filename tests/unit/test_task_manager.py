@@ -127,3 +127,29 @@ def test_manager_resumes_id_from_existing_files(tmp_path: Path) -> None:
     mgr2 = TaskManager(tmp_path)
     task = mgr2.create("third")
     assert task.id == 3
+
+
+# 功能：验证未阻塞任务只能被一个 owner 原子认领
+# 设计：首次 claim 后再次认领同一任务应失败，同时检查状态和 owner 已持久化
+def test_claim_assigns_owner_and_rejects_second_claim(tmp_path: Path) -> None:
+    mgr = TaskManager(tmp_path)
+    mgr.create("parallel work")
+
+    claimed = mgr.claim(1, "reviewer", "review-wt")
+
+    assert claimed.status == "in_progress"
+    assert claimed.owner == "reviewer"
+    assert claimed.worktree == "review-wt"
+    with pytest.raises(ValueError, match="cannot claim"):
+        mgr.claim(1, "executor")
+
+
+# 功能：验证仍有未完成依赖的任务不能被认领
+# 设计：创建依赖边后直接 claim 下游任务，断言错误包含阻塞任务 ID
+def test_claim_rejects_blocked_task(tmp_path: Path) -> None:
+    mgr = TaskManager(tmp_path)
+    mgr.create("first")
+    mgr.create("second", blocked_by=[1])
+
+    with pytest.raises(ValueError, match=r"blocked by \[1\]"):
+        mgr.claim(2, "executor")

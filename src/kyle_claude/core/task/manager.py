@@ -56,11 +56,33 @@ class TaskManager:
             description=description,
             status="pending",
             blocked_by=list(blocked_by or []),
+            owner="",
+            worktree="",
             created_at=now,
             updated_at=now,
         )
         self._save(task)
         self._next_id += 1
+        return task
+
+    # 原子认领可执行的 pending 任务，并记录 owner 和可选 worktree
+    def claim(self, task_id: int, owner: str, worktree: str = "") -> Task:
+        clean_owner = owner.strip()
+        if not clean_owner:
+            raise ValueError("task owner must not be empty")
+        task = self._load(task_id)
+        if task.status != "pending":
+            raise ValueError(f"task {task_id} is {task.status}, cannot claim")
+        if task.owner:
+            raise ValueError(f"task {task_id} already owned by {task.owner}")
+        blocked = [dep_id for dep_id in task.blocked_by if self._load(dep_id).status != "completed"]
+        if blocked:
+            raise ValueError(f"task {task_id} is blocked by {blocked}")
+        task.owner = clean_owner
+        task.worktree = worktree.strip()
+        task.status = "in_progress"
+        task.updated_at = _now()
+        self._save(task)
         return task
 
     # 读取指定 ID 的任务

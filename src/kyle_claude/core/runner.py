@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kyle_claude.core.background import BackgroundJobRegistry
 from kyle_claude.core.bus.events import RunFinishedEvent, RunStartedEvent
 from kyle_claude.core.checkpoints import CheckpointStore
 from kyle_claude.core.compact.compactor import Compactor
@@ -13,11 +14,12 @@ from kyle_claude.core.config import KyleConfig
 from kyle_claude.core.context import ExecutionContext
 from kyle_claude.core.events.bus import EventBus, EventHandler
 from kyle_claude.core.events.writer import EventWriter
+from kyle_claude.core.hooks import HookManager
 from kyle_claude.core.llm.base import LLMProvider
 from kyle_claude.core.llm.factory import create_llm_provider
 from kyle_claude.core.loop import AgentLoop
 from kyle_claude.core.mcp.server import McpServerManager
-from kyle_claude.core.memory.loader import load_context_file
+from kyle_claude.core.memory import MemoryStore, load_context_file
 from kyle_claude.core.permissions.manager import PermissionManager
 from kyle_claude.core.runs import RUNS_DIR, new_run_id
 from kyle_claude.core.session.model import Session
@@ -27,6 +29,10 @@ from kyle_claude.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from kyle_claude.core.task.manager import TaskManager
 from kyle_claude.core.tools.builtin import (
     ApplyPatchTool,
+    BackgroundCancelTool,
+    BackgroundListTool,
+    BackgroundResultTool,
+    BackgroundStartTool,
     BashTool,
     CheckpointListTool,
     CheckpointRewindTool,
@@ -35,18 +41,26 @@ from kyle_claude.core.tools.builtin import (
     GlobTool,
     GrepTool,
     ListDirTool,
+    MemoryForgetTool,
+    MemorySaveTool,
+    MemorySearchTool,
     NoteSaveTool,
     ReadFileTool,
+    TaskClaimTool,
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
     TaskUpdateTool,
+    WorktreeCreateTool,
+    WorktreeListTool,
+    WorktreeRemoveTool,
     WriteFileTool,
 )
 from kyle_claude.core.tools.registry import ToolRegistry
 from kyle_claude.core.trace.provider import TracingProvider
 from kyle_claude.core.trace.writer import TraceWriter
 from kyle_claude.core.workspace import WorkspaceBoundary
+from kyle_claude.core.worktree import WorktreeManager
 
 
 def _now() -> str:
@@ -73,6 +87,9 @@ class AgentRunner:
         trace: TraceWriter | None = None,
         permission_manager: PermissionManager | None = None,
         mcp_manager: McpServerManager | None = None,
+        hooks: HookManager | None = None,
+        background_registry: BackgroundJobRegistry | None = None,
+        workspace_root: Path | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -82,7 +99,15 @@ class AgentRunner:
         self._trace = trace
         self._permission_manager = permission_manager
         self._mcp_manager = mcp_manager
-        self._workspace_boundary = WorkspaceBoundary.current()
+        self._hooks = hooks or HookManager()
+        self._background_registry = background_registry
+        self._workspace_boundary = (
+            WorkspaceBoundary(workspace_root)
+            if workspace_root is not None
+            else WorkspaceBoundary.current()
+        )
+        self._memory_store = MemoryStore(self._workspace_boundary.root / ".kyle" / "memory")
+        self._worktree_manager = WorktreeManager(self._workspace_boundary.root)
         # 跨 run 共享的后台 subagent 任务注册表
         self._task_registry = BackgroundTaskRegistry()
 
@@ -112,7 +137,7 @@ class AgentRunner:
             GlobTool(self._workspace_boundary),
             GrepTool(self._workspace_boundary),
             GitDiffTool(self._workspace_boundary),
-            BashTool(),
+            BashTool(self._workspace_boundary.root),
             EditFileTool(
                 self._workspace_boundary,
                 checkpoint_store=checkpoint_store,
@@ -138,12 +163,20 @@ class AgentRunner:
                     registry.register(checkpoint_tool)
         for t in [
             TaskCreateTool(task_manager),
+            TaskClaimTool(task_manager),
             TaskUpdateTool(task_manager),
             TaskListTool(task_manager),
             TaskGetTool(task_manager),
         ]:
             if _ok(t.name):
                 registry.register(t)
+        for memory_tool in [
+            MemorySaveTool(self._memory_store, session_id, run_id or ""),
+            MemorySearchTool(self._memory_store),
+            MemoryForgetTool(self._memory_store),
+        ]:
+            if _ok(memory_tool.name):
+                registry.register(memory_tool)
         if session is not None and store is not None and run_id is not None:
             note_tool = NoteSaveTool(store, session.id, run_id)
             if _ok(note_tool.name):
@@ -171,6 +204,22 @@ class AgentRunner:
             for mcp_tool in self._mcp_manager.get_tools():
                 if _ok(mcp_tool.name):
                     registry.register(mcp_tool)
+        if self._background_registry is not None:
+            for background_tool in [
+                BackgroundStartTool(self._background_registry, session_id, run_id or ""),
+                BackgroundResultTool(self._background_registry),
+                BackgroundListTool(self._background_registry, session_id),
+                BackgroundCancelTool(self._background_registry),
+            ]:
+                if _ok(background_tool.name):
+                    registry.register(background_tool)
+        for worktree_tool in [
+            WorktreeCreateTool(self._worktree_manager),
+            WorktreeListTool(self._worktree_manager),
+            WorktreeRemoveTool(self._worktree_manager),
+        ]:
+            if _ok(worktree_tool.name):
+                registry.register(worktree_tool)
         return registry
 
     # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
@@ -201,6 +250,14 @@ class AgentRunner:
 
         global_ctx = load_context_file(Path("~/.kyle/context.md").expanduser())
         project_ctx = load_context_file(Path(".kyle/context.md"))
+        recalled = self._memory_store.search(goal, limit=5)
+        recalled_context = self._memory_store.format_context(recalled)
+        if recalled_context:
+            project_ctx = (
+                project_ctx.rstrip()
+                + "\n\n## Recalled Project Memories\n"
+                + recalled_context
+            ).strip()
 
         task_manager = TaskManager(run_path / ".tasks")
         checkpoint_store = CheckpointStore(
@@ -222,6 +279,16 @@ class AgentRunner:
             project_context=project_ctx,
             system_prompt_override=system_prompt_override,
         )
+        prompt_decision = await self._hooks.emit(
+            "UserPromptSubmit",
+            {"run_id": run_id, "session_id": session.id if session else "", "prompt": goal},
+        )
+        if prompt_decision.blocked:
+            return RunOutcome(
+                status="failed",
+                result="",
+                reason=prompt_decision.reason or "prompt_blocked_by_hook",
+            )
         transcript = (
             SessionTranscriptSink(store, session.id, run_id)
             if session is not None and store is not None
@@ -269,6 +336,7 @@ class AgentRunner:
                     session_dir,
                     session_id_str,
                     store=store if session is not None else None,
+                    retain_ratio=self._config.compaction.retain_ratio,
                 )
                 loop = AgentLoop(
                     provider, registry, bus,
@@ -277,8 +345,20 @@ class AgentRunner:
                     compact_threshold=self._config.compaction.auto_threshold,
                     session_id=session_id_str,
                     transcript=transcript,
+                    hooks=self._hooks,
+                    tool_result_limit=self._config.compaction.tool_result_limit,
+                    tool_result_keep=self._config.compaction.tool_result_keep,
+                    tool_result_summarize_threshold=(
+                        self._config.compaction.tool_result_summarize_threshold
+                    ),
                 )
                 await loop.run(context)
+                if context.status == "success":
+                    self._memory_store.remember_explicit_prompt(
+                        goal,
+                        source_session_id=session_id_str,
+                        source_run_id=run_id,
+                    )
             except asyncio.CancelledError:
                 cancelled = True
                 if not context.is_done():

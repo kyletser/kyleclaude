@@ -22,6 +22,7 @@ from kyle_claude.core.tools.errors import RateLimitedError
 from kyle_claude.core.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
+    from kyle_claude.core.hooks import HookManager
     from kyle_claude.core.permissions.manager import PermissionManager
 
 _DEFAULT_TIMEOUT: float = 120.0
@@ -69,6 +70,7 @@ async def invoke_tool(
     *,
     permission_manager: PermissionManager | None = None,
     session_id: str = "",
+    hooks: HookManager | None = None,
 ) -> ToolResult:
     t0 = time.monotonic()
 
@@ -99,6 +101,27 @@ async def invoke_tool(
             return await _fail(
                 bus, run_id, tool_call,
                 "schema_error", str(exc), elapsed(),
+            )
+
+    if hooks is not None:
+        hook_decision = await hooks.emit(
+            "PreToolUse",
+            {
+                "run_id": run_id,
+                "session_id": session_id,
+                "tool_use_id": tool_call.id,
+                "tool_name": tool_call.name,
+                "params": dict(tool_call.input),
+            },
+        )
+        if hook_decision.blocked:
+            return await _fail(
+                bus,
+                run_id,
+                tool_call,
+                "hook_denied",
+                hook_decision.reason or "Tool call blocked by PreToolUse hook.",
+                elapsed(),
             )
 
     if permission_manager is not None:
@@ -171,6 +194,19 @@ async def invoke_tool(
                         ts=_now(),
                     )
                 )
+                if hooks is not None:
+                    await hooks.emit(
+                        "PostToolUse",
+                        {
+                            "run_id": run_id,
+                            "session_id": session_id,
+                            "tool_use_id": tool_call.id,
+                            "tool_name": tool_call.name,
+                            "params": dict(tool_call.input),
+                            "output": result.content,
+                            "is_error": False,
+                        },
+                    )
                 return result
 
         except RateLimitedError as exc:

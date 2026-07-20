@@ -1516,6 +1516,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `summary_tokens` | `integer` | yes |
 | `saved_tokens` | `integer` | yes |
+| `original_tokens` | `integer` | no |
+| `compacted_tokens` | `integer` | no |
+| `retained_tokens` | `integer` | no |
+| `retained_messages` | `integer` | no |
+| `quality_score` | `number` | no |
+| `summary_path` | `string` | no |
 
 ```json
 {
@@ -1527,6 +1533,36 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "saved_tokens": {
       "title": "Saved Tokens",
       "type": "integer"
+    },
+    "original_tokens": {
+      "default": 0,
+      "title": "Original Tokens",
+      "type": "integer"
+    },
+    "compacted_tokens": {
+      "default": 0,
+      "title": "Compacted Tokens",
+      "type": "integer"
+    },
+    "retained_tokens": {
+      "default": 0,
+      "title": "Retained Tokens",
+      "type": "integer"
+    },
+    "retained_messages": {
+      "default": 0,
+      "title": "Retained Messages",
+      "type": "integer"
+    },
+    "quality_score": {
+      "default": 1.0,
+      "title": "Quality Score",
+      "type": "number"
+    },
+    "summary_path": {
+      "default": "",
+      "title": "Summary Path",
+      "type": "string"
     }
   },
   "required": [

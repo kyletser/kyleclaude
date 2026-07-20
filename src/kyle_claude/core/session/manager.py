@@ -258,17 +258,25 @@ class SessionManager:
             from kyle_claude.core.compact.compactor import Compactor
             messages = self._store.read_messages(sid)
             session_dir = self._store.session_dir(sid)
-            compactor = Compactor(self._bus, session_dir, sid)
+            compactor = Compactor(self._bus, session_dir, sid, store=self._store)
             result = await compactor.compact_messages(messages, self._provider, focus=focus)
             if result is None:
                 raise HandlerError(-32021, "compaction failed or not beneficial")
-            self._store.write_compacted(sid, [
-                {"role": "user", "content": result.summary_text},
-                {"role": "assistant", "content": "Understood, I'll continue from this summary."},
-            ])
+            await compactor.commit(
+                result,
+                run_id="manual",
+                trigger="manual",
+                publish=False,
+            )
             return SessionCompactResult(
                 summary_tokens=result.summary_tokens,
-                saved_tokens=max(0, result.original_token_estimate - result.summary_tokens),
+                saved_tokens=max(0, result.original_token_estimate - result.compacted_tokens),
+                original_tokens=result.original_token_estimate,
+                compacted_tokens=result.compacted_tokens,
+                retained_tokens=result.retained_tokens,
+                retained_messages=result.retained_messages,
+                quality_score=result.quality.score,
+                summary_path=result.summary_path,
             )
 
     # 读取指定 session 的完整 thread 历史
