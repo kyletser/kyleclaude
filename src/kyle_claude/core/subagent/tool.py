@@ -16,7 +16,8 @@ from kyle_claude.core.events.writer import EventWriter
 from kyle_claude.core.loop import AgentLoop
 from kyle_claude.core.runs import new_run_id
 from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.task.manager import TaskManager
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from kyle_claude.core.tools.builtin.apply_patch import ApplyPatchTool
 from kyle_claude.core.tools.builtin.bash import BashTool
 from kyle_claude.core.tools.builtin.checkpoint import (
@@ -42,6 +43,7 @@ from kyle_claude.core.worktree import WorktreeError, WorktreeManager
 if TYPE_CHECKING:
     from kyle_claude.core.llm.base import LLMProvider
     from kyle_claude.core.permissions.manager import PermissionManager
+    from kyle_claude.core.task.manager import TaskManager
 
 _profile_loader = AgentProfileLoader()
 
@@ -62,6 +64,7 @@ class SpawnAgentParams(BaseModel):
 # 在隔离的冷启动上下文中派生子 agent，支持前台阻塞和后台并行两种模式
 class SpawnAgentTool(BaseTool):
     name = "spawn_agent"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = (
         "Spawn an isolated sub-agent to handle a self-contained sub-task. "
         "The sub-agent starts with a clean context containing only the provided prompt — "
@@ -115,6 +118,7 @@ class SpawnAgentTool(BaseTool):
         session_id: str,
         depth: int = 0,
         workspace_boundary: WorkspaceBoundary | None = None,
+        task_manager: TaskManager | None = None,
     ) -> None:
         self._provider = provider
         self._parent_bus = parent_bus
@@ -126,6 +130,7 @@ class SpawnAgentTool(BaseTool):
         self._session_id = session_id
         self._depth = depth
         self._workspace_boundary = workspace_boundary or WorkspaceBoundary.current()
+        self._task_manager = task_manager
 
     # 派生子 agent，前台时阻塞直到完成并返回结果，后台时立即返回 run_id
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -178,14 +183,31 @@ class SpawnAgentTool(BaseTool):
 
         child_bus.subscribe(_bridge)
 
+        # 同 run 内所有 child 共享 TaskManager，或 fallback 新建独立实例
+        task_manager = self._task_manager or TaskManager(
+            self._runs_dir / child_run_id / ".tasks"
+        )
         child_registry = self._build_child_registry(
             child_bus,
             child_run_id,
             profile,
             child_boundary,
+            task_manager,
         )
+        # 若 profile 指定 model，包装 provider 在每次 chat 时注入 model kwarg
+        child_provider = self._provider
+        if profile and profile.model:
+            _parent_provider = self._provider
+            _child_model = profile.model
+
+            class _ModelOverrideProvider:
+                async def chat(self, *a: Any, **kw: Any) -> Any:
+                    return await _parent_provider.chat(*a, model=_child_model, **kw)
+
+            child_provider = _ModelOverrideProvider()
+
         child_loop = AgentLoop(
-            self._provider,
+            child_provider,
             child_registry,
             child_bus,
             permission_manager=self._permission_manager,
@@ -281,21 +303,31 @@ class SpawnAgentTool(BaseTool):
                 )
             )
 
-    # 构造子 registry；基于角色配置过滤工具，深度允许时注册嵌套 SpawnAgentTool
+    # 构造子 registry；基于角色配置过滤工具：显式 allowed_tools 与 restrict capability 取最严子集
     def _build_child_registry(
         self,
         child_bus: EventBus,
         child_run_id: str,
         profile: AgentProfile | None,
         boundary: WorkspaceBoundary,
+        task_manager: TaskManager,
     ) -> ToolRegistry:
-        from kyle_claude.core.task.manager import TaskManager
-
         allowed: set[str] | None = (
             set(profile.allowed_tools) if profile and profile.allowed_tools else None
         )
+        restrict_read_only = bool(profile and profile.restrict == "read_only")
 
-        def _allowed(name: str) -> bool:
+        # 显式名单和 restrict read-only 同时存在时取从严子集，单独存在时分别生效
+        def _allowed(tool: BaseTool | str) -> bool:
+            name = tool.name if isinstance(tool, BaseTool) else tool
+            if restrict_read_only:
+                is_read_only_t = (
+                    tool.is_read_only
+                    if isinstance(tool, BaseTool)
+                    else name == "agent_result"
+                )
+                if not is_read_only_t:
+                    return False
             return allowed is None or name in allowed
 
         registry = ToolRegistry()
@@ -324,16 +356,16 @@ class SpawnAgentTool(BaseTool):
             ListDirTool(boundary),
         ]
         for t in _all_tools:
-            if _allowed(t.name):
+            if _allowed(t):
                 registry.register(t)
         for checkpoint_tool in [
             CheckpointListTool(checkpoint_store),
             CheckpointRewindTool(checkpoint_store),
         ]:
-            if _allowed(checkpoint_tool.name):
+            if _allowed(checkpoint_tool):
                 registry.register(checkpoint_tool)
 
-        child_task_manager = TaskManager(self._runs_dir / child_run_id / ".tasks")
+        child_task_manager = task_manager
         for t in [
             TaskCreateTool(child_task_manager),
             TaskClaimTool(child_task_manager),
@@ -341,7 +373,7 @@ class SpawnAgentTool(BaseTool):
             TaskListTool(child_task_manager),
             TaskGetTool(child_task_manager),
         ]:
-            if _allowed(t.name):
+            if _allowed(t):
                 registry.register(t)
 
         if self._depth < 1:
@@ -356,6 +388,7 @@ class SpawnAgentTool(BaseTool):
                 session_id=self._session_id,
                 depth=self._depth + 1,
                 workspace_boundary=boundary,
+                task_manager=task_manager,
             )
             if _allowed("spawn_agent"):
                 registry.register(nested)
@@ -372,6 +405,8 @@ class AgentResultParams(BaseModel):
 # 查询后台 subagent 的执行状态和最终结果
 class AgentResultTool(BaseTool):
     name = "agent_result"
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     description = (
         "Retrieve the result of a background sub-agent previously started with spawn_agent. "
         "Returns 'still running' if the sub-agent has not yet completed."

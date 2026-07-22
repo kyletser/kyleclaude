@@ -60,6 +60,7 @@ from kyle_claude.core.permissions.storage import load_policy_file
 from kyle_claude.core.runner import AgentRunner
 from kyle_claude.core.runs import events_file, new_run_id
 from kyle_claude.core.session import Session, SessionManager, SessionStore
+from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
 from kyle_claude.core.trace.record import TraceRecord
 from kyle_claude.core.trace.writer import TraceWriter
 from kyle_claude.core.transport.auth import load_or_create_ipc_token, require_loopback_host
@@ -85,6 +86,8 @@ class CoreApp:
         self._permission_manager: PermissionManager | None = None
         self._mcp_manager: McpServerManager | None = None
         self._background_registry = BackgroundJobRegistry(self._bus)
+        # daemon 级后台 subagent 任务注册表，跨 turn 持有
+        self._subagent_registry: BackgroundTaskRegistry | None = None
 
     # 处理 core.ping 请求，返回服务版本、运行时长和接收时间
     async def _ping_handler(self, params: dict[str, Any]) -> PongResult:
@@ -349,6 +352,9 @@ class CoreApp:
             logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
             await self._mcp_manager.start_all(self._config.mcp.servers)
 
+        # daemon 级后台 subagent 注册表，跨 turn 持有，session/turn 间不销毁
+        self._subagent_registry = BackgroundTaskRegistry()
+
         self._sessions = SessionManager(
             store,
             runner_factory=lambda: AgentRunner(
@@ -358,6 +364,7 @@ class CoreApp:
                 permission_manager=self._permission_manager,
                 mcp_manager=self._mcp_manager,
                 background_registry=self._background_registry,
+                subagent_registry=self._subagent_registry,
             ),
             bus=self._bus,
             provider=compact_provider,
@@ -411,6 +418,8 @@ class CoreApp:
         if self._mcp_manager is not None:
             await self._mcp_manager.stop_all()
         await self._background_registry.cancel_all()
+        if self._subagent_registry is not None:
+            await self._subagent_registry.cancel_all()
         await server.stop()
         if self._trace is not None:
             await self._trace.stop()

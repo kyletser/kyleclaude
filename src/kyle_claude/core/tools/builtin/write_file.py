@@ -11,7 +11,7 @@ from kyle_claude.core.editing import (
     apply_file_transaction,
     content_hash,
 )
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from kyle_claude.core.workspace import WorkspaceBoundary
 
 _MAX_BYTES = 1 * 1024 * 1024  # 1 MB
@@ -25,6 +25,7 @@ class WriteFileParams(BaseModel):
 
 class WriteFileTool(BaseTool):
     params_model = WriteFileParams
+    side_effect = ToolSideEffect.LOCAL_WRITE
     name = "write_file"
     description = (
         "Write text content to a file, creating it (and any parent directories) if it "

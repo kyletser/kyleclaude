@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from kyle_claude.core.tools.builtin._search import (
     MAX_SEARCH_FILE_BYTES,
     SearchPathFilter,
@@ -54,6 +54,8 @@ class GrepParams(BaseModel):
 class GrepTool(BaseTool):
     name = "grep"
     retry_policy = ToolRetryPolicy.IDEMPOTENT
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     params_model = GrepParams
     description = (
         "Search text with a regular expression inside the workspace. Returns structured "

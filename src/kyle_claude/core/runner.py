@@ -90,6 +90,7 @@ class AgentRunner:
         hooks: HookManager | None = None,
         background_registry: BackgroundJobRegistry | None = None,
         workspace_root: Path | None = None,
+        subagent_registry: BackgroundTaskRegistry | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -108,8 +109,8 @@ class AgentRunner:
         )
         self._memory_store = MemoryStore(self._workspace_boundary.root / ".kyle" / "memory")
         self._worktree_manager = WorktreeManager(self._workspace_boundary.root)
-        # 跨 run 共享的后台 subagent 任务注册表
-        self._task_registry = BackgroundTaskRegistry()
+        # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
+        self._task_registry = subagent_registry or BackgroundTaskRegistry()
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
     def _build_registry(
@@ -196,6 +197,7 @@ class AgentRunner:
                         session_id=session_id,
                         depth=0,
                         workspace_boundary=self._workspace_boundary,
+                        task_manager=task_manager,
                     )
                 )
             if _ok("agent_result"):
@@ -351,6 +353,7 @@ class AgentRunner:
                     tool_result_summarize_threshold=(
                         self._config.compaction.tool_result_summarize_threshold
                     ),
+                    todo_state=task_manager,
                 )
                 await loop.run(context)
                 if context.status == "success":
@@ -370,8 +373,7 @@ class AgentRunner:
                 if not context.is_done():
                     context.mark_failed("llm_error")
 
-            # A Runner is scoped to one turn, so no background child may outlive it.
-            await asyncio.shield(self._task_registry.cancel_descendants(run_id))
+            # 后台 subagent 由 daemon 级 registry 管理生命周期，不在此处清理。
             await bus.publish(
                 RunFinishedEvent(
                     run_id=run_id,

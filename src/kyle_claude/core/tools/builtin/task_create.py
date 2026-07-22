@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 
 from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
 class TaskCreateTool(BaseTool):
     name = "task_create"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = (
         "Create a new task to track a unit of work. "
         "Use this to break down a complex goal into smaller, trackable steps. "

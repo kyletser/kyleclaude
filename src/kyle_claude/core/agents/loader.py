@@ -12,6 +12,8 @@ class AgentProfile:
     system_prompt: str
     allowed_tools: list[str] = field(default_factory=list)
     model: str = ""
+    # 角色配置可选的访问限制策略，目前支持 "read_only"：仅允许副作用为 NONE 的工具
+    restrict: str = ""
 
 
 # 按两级优先级（项目本地 > 用户全局 > 内建）查找并解析角色配置
@@ -46,4 +48,5 @@ class AgentProfileLoader:
             system_prompt=agent.get("system_prompt", "").strip(),
             allowed_tools=agent.get("allowed_tools", []),
             model=agent.get("model", ""),
+            restrict=agent.get("restrict", ""),
         )

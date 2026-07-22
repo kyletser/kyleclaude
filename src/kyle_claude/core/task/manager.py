@@ -3,12 +3,22 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from kyle_claude.core.task.model import Task, TaskStatus
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+# 软状态机视图：loop 据此把 todos 注入 system prompt，并在 end_turn 完成性检查时使用
+class TodoStateView(Protocol):
+    # 返回当前 todos 的简短文本摘要，供 loop 拼到 system prompt 末尾；无 todos 返回空串
+    def active_summary(self) -> str: ...
+
+    # 返回 True 表示仍有未完成 (pending/in_progress) 的 todos
+    def has_incomplete(self) -> bool: ...
 
 
 class TaskManager:
@@ -147,3 +157,19 @@ class TaskManager:
             blocked = f" (blocked by: {t.blocked_by})" if t.blocked_by else ""
             lines.append(f"{marker.get(t.status, '[?]')} #{t.id}: {t.subject}{blocked}")
         return "\n".join(lines)
+
+    # 摘要当前所有 todos，供 loop 在 system prompt 中作为软状态机注入；无任何任务返回空
+    def active_summary(self) -> str:
+        tasks = self.list_all()
+        if not tasks:
+            return ""
+        marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}
+        lines = ["## Todo State"]
+        for t in tasks:
+            blocked = f" (blocked by: {t.blocked_by})" if t.blocked_by else ""
+            lines.append(f"{marker.get(t.status, '[?]')} #{t.id}: {t.subject}{blocked}")
+        return "\n".join(lines)
+
+    # 存在 status != "completed" 的 todos 时返回 True
+    def has_incomplete(self) -> bool:
+        return any(t.status != "completed" for t in self.list_all())

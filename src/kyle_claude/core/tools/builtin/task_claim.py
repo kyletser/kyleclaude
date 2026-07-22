@@ -5,7 +5,7 @@ import json
 from pydantic import BaseModel, ConfigDict
 
 from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
 class TaskClaimParams(BaseModel):
@@ -17,6 +17,7 @@ class TaskClaimParams(BaseModel):
 
 class TaskClaimTool(BaseTool):
     name = "task_claim"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = "Atomically claim an unblocked pending task for an owner and optional worktree."
     params_model = TaskClaimParams
     input_schema = {

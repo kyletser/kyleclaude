@@ -19,13 +19,17 @@ def test_builtin_planner_found() -> None:
 
 
 # 功能：内建三种角色均可加载
-# 设计：参数化测试所有内建角色名
+# 设计：参数化测试所有内建角色名；reviewer 走 restrict 而非 allowed_tools
 @pytest.mark.parametrize("role", ["planner", "executor", "reviewer"])
 def test_all_builtin_roles_found(role: str) -> None:
     loader = AgentProfileLoader()
     profile = loader.load(role)
     assert profile is not None, f"builtin role '{role}' not found"
-    assert profile.allowed_tools  # 每个内建角色都有 allowed_tools
+    if role == "reviewer":
+        # reviewer 以 capability restrict 过滤工具集，故 allowed_tools 可为空
+        assert profile.restrict == "read_only"
+        return
+    assert profile.allowed_tools  # planner / executor 必须列 allowed_tools
     assert "glob" in profile.allowed_tools
     assert "grep" in profile.allowed_tools
     assert "git_diff" in profile.allowed_tools
@@ -34,6 +38,25 @@ def test_all_builtin_roles_found(role: str) -> None:
         assert "edit_file" in profile.allowed_tools
         assert "apply_patch" in profile.allowed_tools
         assert "checkpoint_rewind" in profile.allowed_tools
+
+
+# 功能：restrict 字段应能被 TOML 解析为 AgentProfile.restrict
+# 设计：写入 restrict = "read_only" 的临时 TOML，断言 profile.restrict 等于该值
+def test_restrict_field_parsed(tmp_path: Path) -> None:
+    content = """\
+[agent]
+description = "只读角色"
+system_prompt = "只允许检查。"
+allowed_tools = []
+restrict = "read_only"
+model = ""
+"""
+    p = tmp_path / "auditor.toml"
+    p.write_text(content, encoding="utf-8")
+    loader = AgentProfileLoader()
+    profile = loader._parse(p, "auditor")
+    assert profile is not None
+    assert profile.restrict == "read_only"
 
 
 # 功能：未知角色名应返回 None

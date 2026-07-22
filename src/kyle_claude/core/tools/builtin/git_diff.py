@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from kyle_claude.core.workspace import WorkspaceBoundary
 
 GitDiffScope = Literal["all", "staged", "unstaged"]
@@ -57,6 +57,8 @@ class _GitOutput:
 class GitDiffTool(BaseTool):
     params_model = GitDiffParams
     retry_policy = ToolRetryPolicy.IDEMPOTENT
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     name = "git_diff"
     description = (
         "Inspect Git working tree changes without modifying the repository. Returns structured "

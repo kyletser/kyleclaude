@@ -4,7 +4,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict
 
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from kyle_claude.core.worktree import WorktreeError, WorktreeManager
 
 
@@ -22,6 +22,7 @@ class WorktreeRemoveParams(BaseModel):
 
 class WorktreeCreateTool(BaseTool):
     name = "worktree_create"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = "Create an isolated Git worktree under .kyle/worktrees for parallel work."
     params_model = WorktreeCreateParams
     input_schema = {
@@ -49,6 +50,8 @@ class WorktreeCreateTool(BaseTool):
 
 class WorktreeListTool(BaseTool):
     name = "worktree_list"
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     description = "List Git worktrees managed under .kyle/worktrees."
     params_model = None
     input_schema = {"type": "object", "properties": {}}
@@ -68,6 +71,7 @@ class WorktreeListTool(BaseTool):
 
 class WorktreeRemoveTool(BaseTool):
     name = "worktree_remove"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = "Remove a managed Git worktree, refusing dirty trees unless explicitly discarded."
     params_model = WorktreeRemoveParams
     input_schema = {

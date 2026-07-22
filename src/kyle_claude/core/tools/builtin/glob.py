@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from kyle_claude.core.tools.builtin._search import (
     SearchPathFilter,
     iter_workspace_files,
@@ -35,6 +35,8 @@ class GlobParams(BaseModel):
 class GlobTool(BaseTool):
     name = "glob"
     retry_policy = ToolRetryPolicy.IDEMPOTENT
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     params_model = GlobParams
     description = (
         "Find files by glob pattern inside the workspace. Supports **, respects ignore files, "

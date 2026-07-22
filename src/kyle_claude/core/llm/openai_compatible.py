@@ -61,18 +61,20 @@ class OpenAICompatibleProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        model: str | None = None,
     ) -> LlmResponse:
+        resolved_model = model or self._model
         await bus.publish(
             LlmModelSelectedEvent(
                 run_id=run_id,
-                model=self._model,
+                model=resolved_model,
                 strategy="openai_compatible",
                 ts=_now(),
             )
         )
 
         payload: dict[str, object] = {
-            "model": self._model,
+            "model": resolved_model,
             "messages": _to_openai_messages(messages, system or _SYSTEM_PROMPT),
             "max_tokens": 8192,
         }

@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from kyle_claude.core.checkpoints import CheckpointStore
 from kyle_claude.core.editing import EditEngine, EditError
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from kyle_claude.core.workspace import WorkspaceBoundary
 
 
@@ -30,6 +30,7 @@ class EditFileParams(BaseModel):
 
 class EditFileTool(BaseTool):
     params_model = EditFileParams
+    side_effect = ToolSideEffect.LOCAL_WRITE
     name = "edit_file"
     description = (
         "Replace exact text in an existing UTF-8 file inside the workspace. Read the file first "

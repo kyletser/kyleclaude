@@ -5,7 +5,7 @@ import json
 from pydantic import BaseModel, ConfigDict, Field
 
 from kyle_claude.core.background import BackgroundJobRegistry
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
 class BackgroundStartParams(BaseModel):
@@ -21,6 +21,7 @@ class BackgroundJobParams(BaseModel):
 
 class BackgroundStartTool(BaseTool):
     name = "background_start"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = "Start a slow shell command in the daemon and return a durable job_id."
     params_model = BackgroundStartParams
     input_schema = {
@@ -64,6 +65,8 @@ class BackgroundStartTool(BaseTool):
 
 class BackgroundResultTool(BaseTool):
     name = "background_result"
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     description = "Get status and output for a daemon background job."
     params_model = BackgroundJobParams
     input_schema = {
@@ -95,6 +98,8 @@ class BackgroundResultTool(BaseTool):
 
 class BackgroundListTool(BaseTool):
     name = "background_list"
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     description = "List background jobs created for the current session."
     params_model = None
     input_schema = {"type": "object", "properties": {}}
@@ -116,6 +121,7 @@ class BackgroundListTool(BaseTool):
 
 class BackgroundCancelTool(BaseTool):
     name = "background_cancel"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = "Cancel a running daemon background job."
     params_model = BackgroundJobParams
     input_schema = {

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
 class TaskListTool(BaseTool):
     name = "task_list"
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     description = (
         "List all tasks with their current status and blocking dependencies. "
         "Use this to check what work remains and what can be started next."

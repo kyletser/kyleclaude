@@ -10,6 +10,8 @@ from kyle_claude.core.compact.budget import distill_tool_results, truncate_tool_
 from kyle_claude.core.context import ExecutionContext
 from kyle_claude.core.events.bus import EventBus
 from kyle_claude.core.llm.base import LLMProvider
+from kyle_claude.core.llm.types import ToolCallBlock
+from kyle_claude.core.tools.base import ToolResult
 from kyle_claude.core.tools.invocation import invoke_tool
 from kyle_claude.core.tools.registry import ToolRegistry
 
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
     from kyle_claude.core.compact.compactor import Compactor
     from kyle_claude.core.hooks import HookManager
     from kyle_claude.core.permissions.manager import PermissionManager
+    from kyle_claude.core.task.manager import TodoStateView
 
 
 log = logging.getLogger(__name__)
@@ -29,6 +32,33 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
 )
 _TRANSIENT_ERROR_MARKERS = ("429", "529", "rate limit", "overloaded", "temporarily unavailable")
+
+# 基础系统提示；todos 软状态摘要会追加在其后；所有 loop 实例共享，保持改造前行为
+_BASE_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant. "
+    "Use the available tools to complete the user's goal. "
+    "Prefer glob and grep over shell commands for code discovery. "
+    "Prefer edit_file over write_file when changing an existing file. "
+    "Use apply_patch for related changes across multiple files. "
+    "Use memory_save for durable project facts, user preferences, and "
+    "reusable debugging discoveries; do not store secrets. "
+    "Use background_start for slow tests or builds, then poll with "
+    "background_result while continuing independent work. "
+    "File changes are checkpointed automatically; use "
+    "checkpoint_rewind "
+    "when the user asks to undo the latest agent change. "
+    "When the goal is fully achieved, respond with a final answer "
+    "and do not call any more tools."
+)
+
+# 当 todos 未完成却 end_turn 时注入给模型的提醒，强制其继续推进或显式更新 todos
+_TODO_END_TURN_REMINDER = (
+    "You ended the turn, but the Todo State above still has incomplete items. "
+    "Either continue working on the next pending/in_progress todo, or call "
+    "task_update(status='completed') for any items that are truly done, then end."
+)
+# 连续最多推迟次数；超过即视为模型不再推进 todos，放弃阻拦让其结束
+_MAX_TODO_DEFERS = 3
 
 
 def _now() -> str:
@@ -67,6 +97,7 @@ class AgentLoop:
         tool_result_limit: int = 8_000,
         tool_result_keep: int = 4_000,
         tool_result_summarize_threshold: int = 20_000,
+        todo_state: TodoStateView | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -80,7 +111,11 @@ class AgentLoop:
         self._tool_result_limit = tool_result_limit
         self._tool_result_keep = tool_result_keep
         self._tool_result_summarize_threshold = tool_result_summarize_threshold
+        self._todo_state = todo_state
         self._reactive_compaction_attempted = False
+        # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
+        self._last_todo_snapshot: str = ""
+        self._end_turn_defer_count: int = 0
 
     # 判断异常是否表示上下文窗口已超限
     @staticmethod
@@ -93,6 +128,31 @@ class AgentLoop:
     def _is_transient_error(exc: Exception) -> bool:
         message = f"{type(exc).__name__} {exc}".lower()
         return any(marker in message for marker in _TRANSIENT_ERROR_MARKERS)
+
+    # 计算 system prompt：context 已加载 base 后追加 todos 软状态摘要（若有）
+    def _render_system(self, context: ExecutionContext) -> str:
+        base = context.system_prompt(_BASE_SYSTEM_PROMPT)
+        if self._todo_state is None:
+            return base
+        summary = self._todo_state.active_summary()
+        if not summary:
+            return base
+        return base + "\n\n" + summary
+
+    # 取当前 todos 摘要作为快照，用于判断"模型是否在两次 end_turn 间更新了 todos"
+    def _todo_snapshot(self) -> str:
+        return self._todo_state.active_summary() if self._todo_state else ""
+
+    # 判断是否应推迟 end_turn：todo_state 存在、有未完成 todos、且快照自上次提醒已有
+    # 变化或尚未提醒过；超过 _MAX_TODO_DEFERS 次仍无变化则放弃阻拦
+    def _should_defer_end_turn(self) -> bool:
+        if self._todo_state is None or not self._todo_state.has_incomplete():
+            return False
+        if self._end_turn_defer_count >= _MAX_TODO_DEFERS:
+            return False
+        # 上一轮注入 reminder 后，若 todos 摘要仍未变化，则视为模型未推进，不再阻拦
+        snapshot = self._todo_snapshot()
+        return snapshot != self._last_todo_snapshot
 
     # 对上下文内工具结果应用蒸馏与头尾截断的分级预算
     async def _apply_tool_result_budget(self, context: ExecutionContext) -> None:
@@ -107,6 +167,83 @@ class AgentLoop:
             limit=self._tool_result_limit,
             keep=self._tool_result_keep,
         )
+
+    # 判断某个 tool_call 是否允许并行：tool 存在且声明 can_parallel=True（多为只读工具）
+    def _is_parallelable(self, tc: ToolCallBlock) -> bool:
+        tool = self._registry.get(tc.name)
+        return tool is not None and tool.can_parallel
+
+    # 单一 tool_call 调用通道：屏蔽 _run_act_phase 与上层 run 对 invocation 签名的重复
+    async def _invoke_one(self, tc: ToolCallBlock, context: ExecutionContext) -> ToolResult:
+        return await invoke_tool(
+            self._registry, tc, self._bus, context.run_id,
+            permission_manager=self._permission_manager,
+            session_id=self._session_id,
+            hooks=self._hooks,
+        )
+
+    # 把单个 ToolResult 按原顺序写回 context/transcript；返回是否命中 permission_required
+    def _record_result(
+        self,
+        idx: int,
+        block_count: int,
+        tc: ToolCallBlock,
+        result: ToolResult,
+        context: ExecutionContext,
+    ) -> bool:
+        context.add_tool_result(tc.id, result.content, is_error=result.is_error)
+        if self._transcript is not None:
+            self._transcript.append_tool_result(
+                context.step,
+                tc.id,
+                result.content,
+                is_error=result.is_error,
+                block_index=idx,
+                block_count=block_count,
+            )
+        if result.error_type == "permission_required":
+            context.mark_failed("permission_required")
+            return True
+        return False
+
+    # 执行一轮 tool_use 序列：连续的 can_parallel 工具组成一批用 asyncio.gather 并发，
+    # 副作用工具按模型给定顺序串行；任一批中若出现 permission_required 立即停并跳过后续
+    async def _run_act_phase(
+        self,
+        tool_calls: list[ToolCallBlock],
+        context: ExecutionContext,
+    ) -> None:
+        block_count = len(tool_calls)
+        i = 0
+        n = len(tool_calls)
+        while i < n:
+            j = i
+            # 收集从 i 开始连续的并行工具，构造一个批
+            while j < n and self._is_parallelable(tool_calls[j]):
+                j += 1
+            batch = tool_calls[i:j]
+
+            if not batch:
+                # 当前 tool_calls[i] 不可并行（副作用或未知工具），单独串行执行
+                tc = tool_calls[i]
+                result = await self._invoke_one(tc, context)
+                if self._record_result(i, block_count, tc, result, context):
+                    return
+                i += 1
+                continue
+
+            if len(batch) == 1:
+                results: list[ToolResult] = [await self._invoke_one(batch[0], context)]
+            else:
+                gathered = await asyncio.gather(
+                    *(self._invoke_one(tc, context) for tc in batch)
+                )
+                results = list(gathered)
+
+            for k, tc in enumerate(batch):
+                if self._record_result(i + k, block_count, tc, results[k], context):
+                    return
+            i = j
 
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, context: ExecutionContext) -> None:
@@ -128,22 +265,7 @@ class AgentLoop:
                             bus=self._bus,
                             run_id=context.run_id,
                             step=context.step,
-                            system=context.system_prompt(
-                                "You are a helpful AI assistant. "
-                                "Use the available tools to complete the user's goal. "
-                                "Prefer glob and grep over shell commands for code discovery. "
-                                "Prefer edit_file over write_file when changing an existing file. "
-                                "Use apply_patch for related changes across multiple files. "
-                                "Use memory_save for durable project facts, user preferences, and "
-                                "reusable debugging discoveries; do not store secrets. "
-                                "Use background_start for slow tests or builds, then poll with "
-                                "background_result while continuing independent work. "
-                                "File changes are checkpointed automatically; use "
-                                "checkpoint_rewind "
-                                "when the user asks to undo the latest agent change. "
-                                "When the goal is fully achieved, respond with a final answer "
-                                "and do not call any more tools."
-                            ),
+                            system=self._render_system(context),
                         )
                         break
                     except asyncio.CancelledError:
@@ -196,28 +318,9 @@ class AgentLoop:
             if self._transcript is not None:
                 self._transcript.append_assistant(context.step, blocks)
 
-            # [act] execute each requested tool; errors become tool results so loop continues
+            # [act] 按工具能力分组执行；连续的 can_parallel 工具组成一批并发，副作用工具串行
             if response.stop_reason == "tool_use":
-                for result_index, tc in enumerate(response.tool_calls):
-                    result = await invoke_tool(
-                        self._registry, tc, self._bus, context.run_id,
-                        permission_manager=self._permission_manager,
-                        session_id=self._session_id,
-                        hooks=self._hooks,
-                    )
-                    context.add_tool_result(tc.id, result.content, is_error=result.is_error)
-                    if self._transcript is not None:
-                        self._transcript.append_tool_result(
-                            context.step,
-                            tc.id,
-                            result.content,
-                            is_error=result.is_error,
-                            block_index=result_index,
-                            block_count=len(response.tool_calls),
-                        )
-                    if result.error_type == "permission_required":
-                        context.mark_failed("permission_required")
-                        break
+                await self._run_act_phase(response.tool_calls, context)
             elif response.stop_reason == "max_tokens" and response.tool_calls:
                 # Output token limit hit mid-tool-call; input is incomplete.
                 # Add synthetic error results so the conversation stays balanced.
@@ -237,10 +340,28 @@ class AgentLoop:
                             block_count=len(response.tool_calls),
                         )
 
-            # Termination check — end_turn wins over max_steps if both hit on same step
+            # 软状态机：end_turn 时若有未完成 todos 且 todos 自上次提醒发生过变化，注入 reminder
+            # 让模型继续；连续 _MAX_TODO_DEFERS 次提醒 todos 仍不变就放弃阻拦，避免死循环
             if response.stop_reason == "end_turn":
-                context.result = response.text or ""
-                context.mark_success()
+                if self._should_defer_end_turn():
+                    snapshot = self._todo_snapshot() if self._todo_state else ""
+                    self._end_turn_defer_count += 1
+                    context.messages.append(
+                        {"role": "user", "content": _TODO_END_TURN_REMINDER}
+                    )
+                    if self._transcript is not None:
+                        self._transcript.append_tool_result(
+                            context.step,
+                            "todo_end_turn_reminder",
+                            _TODO_END_TURN_REMINDER,
+                            is_error=False,
+                            block_index=0,
+                            block_count=1,
+                        )
+                    self._last_todo_snapshot = snapshot
+                else:
+                    context.result = response.text or ""
+                    context.mark_success()
             elif not context.is_done() and context.step >= context.max_steps:
                 context.mark_failed("exceeded_max_steps")
 

@@ -4,11 +4,12 @@ import json
 
 from kyle_claude.core.task.manager import TaskManager
 from kyle_claude.core.task.model import TaskStatus
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
 class TaskUpdateTool(BaseTool):
     name = "task_update"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = (
         "Update a task's status or dependency list. "
         "Set status to 'in_progress' when starting work on a task, "

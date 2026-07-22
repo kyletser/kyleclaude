@@ -24,5 +24,6 @@ system_prompt = """
 ## 建议
 （后续行动，如有）
 """
-allowed_tools = ["read_file", "list_dir", "glob", "grep", "git_diff", "checkpoint_list", "bash"]
+allowed_tools = []
+restrict = "read_only"
 model = "claude-sonnet-4-6"

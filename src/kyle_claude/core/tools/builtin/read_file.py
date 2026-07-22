@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from kyle_claude.core.editing import content_hash
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from kyle_claude.core.workspace import WorkspaceBoundary
 
 _MAX_BYTES = 512 * 1024  # 512 KB
@@ -20,6 +20,8 @@ class ReadFileParams(BaseModel):
 class ReadFileTool(BaseTool):
     params_model = ReadFileParams
     retry_policy = ToolRetryPolicy.IDEMPOTENT
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     name = "read_file"
     description = (
         "Read the text content of a file. "

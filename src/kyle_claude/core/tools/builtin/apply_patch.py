@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 from kyle_claude.core.checkpoints import CheckpointStore
 from kyle_claude.core.patching import PatchEngine, PatchError
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from kyle_claude.core.workspace import WorkspaceBoundary
 
 
@@ -19,6 +19,7 @@ class ApplyPatchParams(BaseModel):
 
 class ApplyPatchTool(BaseTool):
     params_model = ApplyPatchParams
+    side_effect = ToolSideEffect.LOCAL_WRITE
     name = "apply_patch"
     description = (
         "Apply a standard multi-file unified diff inside the workspace. Every file and hunk is "

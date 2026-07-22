@@ -400,7 +400,9 @@ async def test_cancelled_runner_recovers_incremental_transcript_tail(tmp_path: P
     assert list(store.session_dir("sess-1").glob("thread_interrupted_run-1_*.jsonl"))
 
 
-async def test_successful_runner_cancels_unfinished_background_descendants(
+# 功能：daemon 级 registry 下 runner 结束不取消后台子任务（生命周期由 daemon 管理）
+# 设计：旧行为是在 runner 末尾 cancel_descendants，改为 daemon 级后 runner 不再自动杀
+async def test_runner_no_longer_cancels_background_descendants(
     tmp_path: Path,
 ) -> None:
     runner = AgentRunner(
@@ -409,7 +411,8 @@ async def test_successful_runner_cancels_unfinished_background_descendants(
         runs_dir=tmp_path,
     )
     child_context = ExecutionContext("child", "background", 1)
-    child_task = asyncio.create_task(asyncio.Event().wait())
+    child_event = asyncio.Event()
+    child_task = asyncio.create_task(child_event.wait())
     runner._task_registry.register(  # type: ignore[attr-defined]
         "child",
         child_task,  # type: ignore[arg-type]
@@ -419,5 +422,8 @@ async def test_successful_runner_cancels_unfinished_background_descendants(
 
     await runner.run_and_capture("finish", run_id="root")
 
-    assert child_task.cancelled()
-    assert child_context.reason == "cancelled"
+    # daemon 级：runner 结束不取消后台任务
+    assert not child_task.cancelled()
+    assert not child_context.is_done()
+    child_event.set()
+    await child_task

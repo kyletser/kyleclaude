@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from kyle_claude.core.workspace import WorkspaceBoundary
 
 _MAX_DEPTH = 4
@@ -20,6 +20,8 @@ class ListDirParams(BaseModel):
 class ListDirTool(BaseTool):
     params_model = ListDirParams
     retry_policy = ToolRetryPolicy.IDEMPOTENT
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     name = "list_dir"
     description = (
         "List the contents of a directory as a tree. "

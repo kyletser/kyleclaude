@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from kyle_claude.core.memory import MemoryStore
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
 class MemorySaveParams(BaseModel):
@@ -30,6 +30,7 @@ class MemoryForgetParams(BaseModel):
 
 class MemorySaveTool(BaseTool):
     name = "memory_save"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = "Save a durable project memory with provenance for future sessions."
     params_model = MemorySaveParams
     input_schema = {
@@ -76,6 +77,8 @@ class MemorySaveTool(BaseTool):
 
 class MemorySearchTool(BaseTool):
     name = "memory_search"
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     description = "Search durable project memories and return their sources."
     params_model = MemorySearchParams
     input_schema = {
@@ -104,6 +107,7 @@ class MemorySearchTool(BaseTool):
 
 class MemoryForgetTool(BaseTool):
     name = "memory_forget"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = "Delete a durable project memory by memory_id."
     params_model = MemoryForgetParams
     input_schema = {

@@ -5,7 +5,7 @@ import json
 from pydantic import BaseModel, ConfigDict
 
 from kyle_claude.core.checkpoints import CheckpointError, CheckpointStore
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 
 
 class CheckpointListParams(BaseModel):
@@ -15,6 +15,8 @@ class CheckpointListParams(BaseModel):
 class CheckpointListTool(BaseTool):
     params_model = CheckpointListParams
     retry_policy = ToolRetryPolicy.IDEMPOTENT
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     name = "checkpoint_list"
     description = "List file checkpoints created automatically during the current agent run."
     input_schema: dict[str, object] = {"type": "object", "properties": {}}
@@ -50,6 +52,7 @@ class CheckpointRewindParams(BaseModel):
 
 class CheckpointRewindTool(BaseTool):
     params_model = CheckpointRewindParams
+    side_effect = ToolSideEffect.LOCAL_WRITE
     name = "checkpoint_rewind"
     description = (
         "Restore files from a checkpoint created in the current run. Defaults to the latest ready "

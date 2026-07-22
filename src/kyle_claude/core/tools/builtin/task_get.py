@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 
 from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.base import BaseTool, ToolResult
+from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
 class TaskGetTool(BaseTool):
     name = "task_get"
+    side_effect = ToolSideEffect.NONE
+    can_parallel = True
     description = "Get full details of a task by its integer ID. Returns the task as JSON."
     input_schema: dict[str, object] = {
         "type": "object",
