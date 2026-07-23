@@ -36,6 +36,9 @@ async def running_daemon(
     env["KYLE_PORT"] = str(free_port)
     env["KYLE_LOG_FILE"] = ""
     env["KYLE_LOG_LEVEL"] = "WARNING"
+    # IPC 集成测试不调用真实模型，固定占位配置以避免依赖本机 .env 或 CI Secret
+    env["KYLE_LLM_PROVIDER"] = "anthropic"
+    env["ANTHROPIC_API_KEY"] = "test-only-not-a-real-key"
 
     proc = subprocess.Popen([sys.executable, "-m", "kyle_claude.core"], env=env)
 
