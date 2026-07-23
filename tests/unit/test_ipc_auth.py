@@ -74,6 +74,8 @@ def test_token_reader_rejects_malformed_and_symlink_files(
         link.symlink_to(target)
     except OSError:
         pytest.skip("symlink creation is unavailable")
+    if not os.path.islink(link):
+        pytest.skip("symlink was not created on this platform/sandbox")
     with pytest.raises(IpcTokenError, match="symlink"):
         read_ipc_token(link)
 
