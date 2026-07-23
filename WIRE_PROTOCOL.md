@@ -6,7 +6,7 @@
 
 - TCP loopback `127.0.0.1:7437`; `KYLE_HOST` may only select a loopback address
 - Each message is one `\n`-terminated JSON line (NDJSON)
-- Commands use JSON-RPC 2.0 (client ¡ú server); Events use `kind=event` envelope (server ¡ú client)
+- Commands use JSON-RPC 2.0 (client -> server); Events use `kind=event` envelope (server -> client)
 - The first frame must be `core.authenticate`; failure closes the connection
 - Core reads `KYLE_IPC_TOKEN` or creates the private `~/.kyle/ipc-token` file
 - Authentication frames and token values are excluded from Trace
@@ -1624,7 +1624,7 @@ Events pushed from daemon to subscribed clients over the same TCP connection.
 
 ## IPC Events
 
-Events sent over the IPC socket (daemon ¡ú client).
+Events sent over the IPC socket (daemon -> client).
 
 ### CoreStartedEvent
 

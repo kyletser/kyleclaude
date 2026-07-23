@@ -191,7 +191,7 @@ def generate() -> str:
         "## Transport\n\n",
         "- TCP loopback `127.0.0.1:7437`; `KYLE_HOST` may only select a loopback address\n",
         "- Each message is one `\\n`-terminated JSON line (NDJSON)\n",
-        "- Commands use JSON-RPC 2.0 (client → server); Events use `kind=event` envelope (server → client)\n",
+        "- Commands use JSON-RPC 2.0 (client -> server); Events use `kind=event` envelope (server -> client)\n",
         "- The first frame must be `core.authenticate`; failure closes the connection\n",
         "- Core reads `KYLE_IPC_TOKEN` or creates the private `~/.kyle/ipc-token` file\n",
         "- Authentication frames and token values are excluded from Trace\n\n",
@@ -280,7 +280,7 @@ def generate() -> str:
         "Events pushed from daemon to subscribed clients over the same TCP connection.\n\n",
         _model_section("EventPushEnvelope", EventPushEnvelope, event_push_example),
         "\n## IPC Events\n\n",
-        "Events sent over the IPC socket (daemon → client).\n\n",
+        "Events sent over the IPC socket (daemon -> client).\n\n",
         _model_section("CoreStartedEvent", CoreStartedEvent),
         "\n## Run Events\n\n",
         "Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscribed clients.\n\n",
@@ -378,15 +378,16 @@ def main() -> None:
     if args.check:
         output_path = Path(args.output)
         if not output_path.exists():
-            print(f"ERROR: {output_path} not found — run: make docs", file=sys.stderr)
+            print(f"ERROR: {output_path} not found - run: make docs", file=sys.stderr)
             sys.exit(1)
-        if output_path.read_text() != content:
-            print(f"ERROR: {output_path} out of sync with code — run: make docs", file=sys.stderr)
+        existing = output_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if existing != content:
+            print(f"ERROR: {output_path} out of sync with code - run: make docs", file=sys.stderr)
             sys.exit(1)
         print(f"OK: {output_path} is up to date.")
     else:
         output_path = Path(args.output)
-        output_path.write_text(content)
+        output_path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Generated {output_path}")
 
 

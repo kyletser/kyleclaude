@@ -19,15 +19,20 @@ def _pid_exists(pid: int) -> bool:
         import ctypes
 
         process_query_limited_information = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return False
+        kernel32 = windll.kernel32
+        handle = kernel32.OpenProcess(
             process_query_limited_information,
             False,
             pid,
         )
         if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)
+            kernel32.CloseHandle(handle)
             return True
-        return ctypes.get_last_error() == 5  # access denied still means the PID exists
+        get_last_error = getattr(ctypes, "get_last_error", lambda: 0)
+        return int(get_last_error()) == 5  # access denied still means the PID exists
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
